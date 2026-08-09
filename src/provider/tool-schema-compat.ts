@@ -751,6 +751,28 @@ function writeToolExample(writeSchema: unknown): string {
   return "write with path and content";
 }
 
+/**
+ * Infer the edit tool's advertised arg names from schema validation `missing`
+ * keys. OpenCode-native edit uses camelCase (filePath/oldString/newString);
+ * the plugin's local/oc_* registry uses snake_case (path/old_string/new_string).
+ * Repair hints must match the schema the model was given — mixed naming
+ * causes retry loops on Auto/Composer.
+ */
+function editContractArgNames(missing: string[]): {
+  path: string;
+  oldString: string;
+  newString: string;
+} {
+  const usesNativeCamelCase =
+    missing.includes("filePath")
+    || missing.includes("oldString")
+    || missing.includes("newString");
+  if (usesNativeCamelCase) {
+    return { path: "filePath", oldString: "oldString", newString: "newString" };
+  }
+  return { path: "path", oldString: "old_string", newString: "new_string" };
+}
+
 function buildEditFullFileHint(
   args: JsonRecord,
   missing: string[],
@@ -778,7 +800,8 @@ function buildEditFullFileHint(
   }
 
   const example = writeToolExample(context.writeSchema);
-  return `For a full file body, use ${example} instead of edit without old_string`;
+  const { oldString } = editContractArgNames(missing);
+  return `For a full file body, use ${example} instead of edit without ${oldString}`;
 }
 
 function buildRepairHint(
@@ -811,7 +834,8 @@ function buildRepairHint(
     isToolName(toolName, "edit")
     && (missing.includes("old_string") || missing.includes("oldString") || missing.includes("new_string") || missing.includes("newString"))
   ) {
-    hints.push("edit requires path, old_string, and new_string");
+    const keys = editContractArgNames(missing);
+    hints.push(`edit requires ${keys.path}, ${keys.oldString}, and ${keys.newString}`);
   }
 
   return hints.join(" | ");

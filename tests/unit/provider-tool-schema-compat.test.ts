@@ -778,6 +778,128 @@ describe("tool schema compatibility", () => {
     expect(result.validation.repairHint).toContain("write");
   });
 
+  describe("edit repair hint naming", () => {
+    it("uses native camelCase contract when edit schema is filePath/oldString/newString", () => {
+      const result = applyToolSchemaCompat(
+        {
+          id: "c_native_edit_hint",
+          type: "function",
+          function: {
+            name: "edit",
+            arguments: JSON.stringify({ filePath: "/tmp/out.txt" }),
+          },
+        },
+        new Map([
+          [
+            "edit",
+            {
+              type: "object",
+              properties: {
+                filePath: { type: "string" },
+                oldString: { type: "string" },
+                newString: { type: "string" },
+              },
+              required: ["filePath", "oldString", "newString"],
+              additionalProperties: false,
+            },
+          ],
+        ]),
+      );
+
+      expect(result.validation.ok).toBe(false);
+      expect(result.validation.missing).toEqual(["oldString", "newString"]);
+      expect(result.validation.repairHint).toBe(
+        "missing required: oldString, newString | edit requires filePath, oldString, and newString",
+      );
+      expect(result.validation.repairHint).not.toContain("old_string");
+      expect(result.validation.repairHint).not.toContain("new_string");
+    });
+
+    it("keeps snake_case contract when edit schema is path/old_string/new_string", () => {
+      const result = applyToolSchemaCompat(
+        {
+          id: "c_local_edit_hint",
+          type: "function",
+          function: {
+            name: "edit",
+            arguments: JSON.stringify({ path: "/tmp/out.txt" }),
+          },
+        },
+        new Map([
+          [
+            "edit",
+            {
+              type: "object",
+              properties: {
+                path: { type: "string" },
+                old_string: { type: "string" },
+                new_string: { type: "string" },
+              },
+              required: ["path", "old_string", "new_string"],
+              additionalProperties: false,
+            },
+          ],
+        ]),
+      );
+
+      expect(result.validation.ok).toBe(false);
+      expect(result.validation.missing).toEqual(["old_string", "new_string"]);
+      expect(result.validation.repairHint).toBe(
+        "missing required: old_string, new_string | edit requires path, old_string, and new_string",
+      );
+      expect(result.validation.repairHint).not.toContain("oldString");
+      expect(result.validation.repairHint).not.toContain("filePath");
+    });
+
+    it("full-file hint names the missing old* key from the edit schema", () => {
+      const result = applyToolSchemaCompat(
+        {
+          id: "c_native_full_file_hint",
+          type: "function",
+          function: {
+            name: "edit",
+            arguments: JSON.stringify({
+              filePath: "/tmp/out.txt",
+              content: "entire body",
+            }),
+          },
+        },
+        new Map([
+          [
+            "edit",
+            {
+              type: "object",
+              properties: {
+                filePath: { type: "string" },
+                oldString: { type: "string" },
+                newString: { type: "string" },
+              },
+              required: ["filePath", "oldString", "newString"],
+              additionalProperties: false,
+            },
+          ],
+          [
+            "write",
+            {
+              type: "object",
+              properties: {
+                filePath: { type: "string" },
+                content: { type: "string" },
+              },
+              required: ["filePath", "content"],
+            },
+          ],
+        ]),
+      );
+
+      expect(result.validation.ok).toBe(false);
+      expect(result.validation.missing).toEqual(["oldString"]);
+      expect(result.validation.repairHint).toContain("write with filePath and content");
+      expect(result.validation.repairHint).toContain("without oldString");
+      expect(result.validation.repairHint).not.toContain("without old_string");
+    });
+  });
+
   describe("edit to write reroute", () => {
     it("full-file hint uses filePath when write schema requires filePath", () => {
       const toolSchemaMap = buildEditWriteSchemaMap(true);
