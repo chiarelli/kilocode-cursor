@@ -41,6 +41,18 @@ const ARG_KEY_ALIASES = new Map<string, string>([
   ["recursive", "force"],
   ["oldstring", "old_string"],
   ["newstring", "new_string"],
+  ["subagenttype", "subagent_type"],
+]);
+
+// cursor-agent names its own subagent roster (see `mapSubagentType` in the
+// cursor-agent client bundle: computer_use, explore, video_review, browser_use,
+// shell, vm_setup_helper, unspecified, or a `{ custom: <name> }` wrapper).
+// Only the entries below have an unambiguous OpenCode counterpart; every other
+// value is forwarded untouched so OpenCode can answer with its own
+// "Agent not found: X. Available agents: ..." message instead of a schema error.
+const CURSOR_SUBAGENT_TYPE_ALIASES = new Map<string, string>([
+  ["unspecified", "general"],
+  ["generalpurpose", "general"],
 ]);
 
 export interface ToolSchemaValidationResult {
@@ -291,10 +303,45 @@ function resolveCanonicalArgKey(rawKey: string): string | null {
   return ARG_KEY_ALIASES.get(token) ?? null;
 }
 
+function resolveCursorSubagentType(value: unknown): string | null {
+  let raw: string | null = null;
+
+  if (typeof value === "string") {
+    raw = value;
+  } else if (isRecord(value)) {
+    // cursor-agent encodes its subagent selection as a single-key wrapper:
+    // `{ custom: "reviewer" }` carries the name in the value, while oneof
+    // markers such as `{ unspecified: {} }` carry it in the key.
+    const keys = Object.keys(value);
+    if (keys.length !== 1) {
+      return null;
+    }
+    const [key] = keys;
+    const inner = value[key];
+    raw = typeof inner === "string" && inner.trim().length > 0 ? inner : key;
+  }
+
+  if (raw === null || raw.trim().length === 0) {
+    return null;
+  }
+
+  const trimmed = raw.trim();
+  const token = trimmed.toLowerCase().replace(/[^a-z0-9]/g, "");
+  return CURSOR_SUBAGENT_TYPE_ALIASES.get(token) ?? trimmed;
+}
+
 function normalizeToolSpecificArgs(toolName: string, args: JsonRecord, schema?: unknown): JsonRecord {
   const normalizedToolName = toolName.toLowerCase();
   if (normalizedToolName === "question" && QUESTION_COMPAT_REPAIR_ENABLED) {
     return normalizeQuestionArgs(args);
+  }
+
+  if (normalizedToolName === "task") {
+    const subagentType = resolveCursorSubagentType(args.subagent_type);
+    if (subagentType === null || subagentType === args.subagent_type) {
+      return args;
+    }
+    return { ...args, subagent_type: subagentType };
   }
 
   if (normalizedToolName === "bash") {
