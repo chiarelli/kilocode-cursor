@@ -101,7 +101,12 @@ export function applyToolSchemaCompat(
   const originalArgKeys = Object.keys(parsedArgs);
   const schema = toolSchemaMap.get(toolCall.function.name);
   const { normalizedArgs, collisionKeys } = normalizeArgumentKeys(parsedArgs, schema);
-  const toolSpecificArgs = normalizeToolSpecificArgs(toolCall.function.name, normalizedArgs, schema);
+  const toolSpecificArgs = normalizeToolSpecificArgs(
+    toolCall.function.name,
+    normalizedArgs,
+    schema,
+    originalArgKeys.includes("subagent_type"),
+  );
   const sanitization = sanitizeArgumentsForSchema(toolSpecificArgs, schema);
   const validation = validateToolArguments(
     toolCall.function.name,
@@ -318,6 +323,9 @@ function resolveCursorSubagentType(value: unknown): string | null {
     }
     const [key] = keys;
     const inner = value[key];
+    if (key === "custom" && typeof inner === "string" && inner.trim().length > 0) {
+      return inner.trim();
+    }
     raw = typeof inner === "string" && inner.trim().length > 0 ? inner : key;
   }
 
@@ -330,13 +338,21 @@ function resolveCursorSubagentType(value: unknown): string | null {
   return CURSOR_SUBAGENT_TYPE_ALIASES.get(token) ?? trimmed;
 }
 
-function normalizeToolSpecificArgs(toolName: string, args: JsonRecord, schema?: unknown): JsonRecord {
+function normalizeToolSpecificArgs(
+  toolName: string,
+  args: JsonRecord,
+  schema?: unknown,
+  preserveCanonicalSubagentType = false,
+): JsonRecord {
   const normalizedToolName = toolName.toLowerCase();
   if (normalizedToolName === "question" && QUESTION_COMPAT_REPAIR_ENABLED) {
     return normalizeQuestionArgs(args);
   }
 
   if (normalizedToolName === "task") {
+    if (preserveCanonicalSubagentType) {
+      return args;
+    }
     const subagentType = resolveCursorSubagentType(args.subagent_type);
     if (subagentType === null || subagentType === args.subagent_type) {
       return args;

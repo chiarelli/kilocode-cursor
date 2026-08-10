@@ -956,19 +956,21 @@ describe("tool schema compatibility", () => {
       expect(result.validation.ok).toBe(true);
     });
 
-    it("maps the unspecified cursor subagent type to general", () => {
-      const result = applyToolSchemaCompat(
-        buildTaskCall({
-          description: "review plan",
-          prompt: "review the plan",
-          subagentType: "unspecified",
-        }),
-        buildTaskSchemaMap(),
-      );
+    for (const builtInType of ["unspecified", "generalPurpose"]) {
+      it(`maps the ${builtInType} cursor subagent type to general`, () => {
+        const result = applyToolSchemaCompat(
+          buildTaskCall({
+            description: "review plan",
+            prompt: "review the plan",
+            subagentType: builtInType,
+          }),
+          buildTaskSchemaMap(),
+        );
 
-      expect(result.normalizedArgs.subagent_type).toBe("general");
-      expect(result.validation.ok).toBe(true);
-    });
+        expect(result.normalizedArgs.subagent_type).toBe("general");
+        expect(result.validation.ok).toBe(true);
+      });
+    }
 
     it("unwraps a custom cursor subagent wrapper to the custom name", () => {
       const result = applyToolSchemaCompat(
@@ -983,6 +985,22 @@ describe("tool schema compatibility", () => {
       expect(result.normalizedArgs.subagent_type).toBe("homeassistant");
       expect(result.validation.ok).toBe(true);
     });
+
+    for (const customName of ["unspecified", "generalPurpose"]) {
+      it(`preserves the explicit custom cursor subagent name ${customName}`, () => {
+        const result = applyToolSchemaCompat(
+          buildTaskCall({
+            description: "review plan",
+            prompt: "review the plan",
+            subagentType: { custom: customName },
+          }),
+          buildTaskSchemaMap(),
+        );
+
+        expect(result.normalizedArgs.subagent_type).toBe(customName);
+        expect(result.validation.ok).toBe(true);
+      });
+    }
 
     it("passes through cursor-only subagent types so opencode can name valid agents", () => {
       const result = applyToolSchemaCompat(
@@ -1011,6 +1029,22 @@ describe("tool schema compatibility", () => {
       expect(result.normalizedArgs.subagent_type).toBe("general");
       expect(result.validation.ok).toBe(true);
     });
+
+    for (const customName of ["unspecified", "generalPurpose"]) {
+      it(`preserves the canonical opencode subagent name ${customName}`, () => {
+        const result = applyToolSchemaCompat(
+          buildTaskCall({
+            description: "review plan",
+            prompt: "review the plan",
+            subagent_type: customName,
+          }),
+          buildTaskSchemaMap(),
+        );
+
+        expect(result.normalizedArgs.subagent_type).toBe(customName);
+        expect(result.validation.ok).toBe(true);
+      });
+    }
 
     it("drops cursor-only task arguments the opencode schema does not declare", () => {
       const result = applyToolSchemaCompat(
