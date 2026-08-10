@@ -900,6 +900,144 @@ describe("tool schema compatibility", () => {
     });
   });
 
+  describe("cursor task subagent type", () => {
+    function buildTaskCall(args: Record<string, unknown>): OpenAiToolCall {
+      return {
+        id: "c_task",
+        type: "function",
+        function: { name: "task", arguments: JSON.stringify(args) },
+      };
+    }
+
+    function buildTaskSchemaMap(): Map<string, unknown> {
+      return new Map([
+        [
+          "task",
+          {
+            type: "object",
+            properties: {
+              description: { type: "string" },
+              prompt: { type: "string" },
+              subagent_type: { type: "string" },
+            },
+            required: ["description", "prompt", "subagent_type"],
+            additionalProperties: false,
+          },
+        ],
+      ]);
+    }
+
+    it("normalizes cursor-agent subagentType to canonical subagent_type", () => {
+      const result = applyToolSchemaCompat(
+        buildTaskCall({
+          description: "review plan",
+          prompt: "review the plan",
+          subagentType: "explore",
+        }),
+        buildTaskSchemaMap(),
+      );
+
+      expect(result.normalizedArgs.subagent_type).toBe("explore");
+      expect(result.normalizedArgs.subagentType).toBeUndefined();
+      expect(result.validation.ok).toBe(true);
+    });
+
+    it("unwraps oneof-style subagentType objects to a string", () => {
+      const result = applyToolSchemaCompat(
+        buildTaskCall({
+          description: "review plan",
+          prompt: "review the plan",
+          subagentType: { unspecified: {} },
+        }),
+        buildTaskSchemaMap(),
+      );
+
+      expect(result.normalizedArgs.subagent_type).toBe("general");
+      expect(result.validation.ok).toBe(true);
+    });
+
+    it("maps the unspecified cursor subagent type to general", () => {
+      const result = applyToolSchemaCompat(
+        buildTaskCall({
+          description: "review plan",
+          prompt: "review the plan",
+          subagentType: "unspecified",
+        }),
+        buildTaskSchemaMap(),
+      );
+
+      expect(result.normalizedArgs.subagent_type).toBe("general");
+      expect(result.validation.ok).toBe(true);
+    });
+
+    it("unwraps a custom cursor subagent wrapper to the custom name", () => {
+      const result = applyToolSchemaCompat(
+        buildTaskCall({
+          description: "review plan",
+          prompt: "review the plan",
+          subagentType: { custom: "homeassistant" },
+        }),
+        buildTaskSchemaMap(),
+      );
+
+      expect(result.normalizedArgs.subagent_type).toBe("homeassistant");
+      expect(result.validation.ok).toBe(true);
+    });
+
+    it("passes through cursor-only subagent types so opencode can name valid agents", () => {
+      const result = applyToolSchemaCompat(
+        buildTaskCall({
+          description: "run shell",
+          prompt: "run it",
+          subagentType: "shell",
+        }),
+        buildTaskSchemaMap(),
+      );
+
+      expect(result.normalizedArgs.subagent_type).toBe("shell");
+      expect(result.validation.ok).toBe(true);
+    });
+
+    it("leaves an already-canonical subagent_type untouched", () => {
+      const result = applyToolSchemaCompat(
+        buildTaskCall({
+          description: "review plan",
+          prompt: "review the plan",
+          subagent_type: "general",
+        }),
+        buildTaskSchemaMap(),
+      );
+
+      expect(result.normalizedArgs.subagent_type).toBe("general");
+      expect(result.validation.ok).toBe(true);
+    });
+
+    it("drops cursor-only task arguments the opencode schema does not declare", () => {
+      const result = applyToolSchemaCompat(
+        buildTaskCall({
+          description: "review plan",
+          prompt: "review the plan",
+          subagentType: { unspecified: {} },
+          agentId: "agent_123",
+          attachments: [],
+          mode: "default",
+          environment: "local",
+          respondingToMessageIds: ["m1"],
+        }),
+        buildTaskSchemaMap(),
+      );
+
+      const args = JSON.parse(result.toolCall.function.arguments);
+      expect(args.subagent_type).toBe("general");
+      expect(args.agentId).toBeUndefined();
+      expect(args.attachments).toBeUndefined();
+      expect(args.mode).toBeUndefined();
+      expect(args.environment).toBeUndefined();
+      expect(args.respondingToMessageIds).toBeUndefined();
+      expect(result.validation.ok).toBe(true);
+    });
+  });
+
   describe("edit to write reroute", () => {
     it("full-file hint uses filePath when write schema requires filePath", () => {
       const toolSchemaMap = buildEditWriteSchemaMap(true);
