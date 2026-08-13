@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "bun:test";
-import { autoRefreshModels } from "../../../src/models/sync.js";
+import {
+  autoRefreshModels,
+  discoverModelsForRefresh,
+} from "../../../src/models/sync.js";
 
 type MockDeps = Parameters<typeof autoRefreshModels>[0];
 
@@ -41,6 +44,60 @@ function createDeps(overrides: MockDeps = {}) {
 describe("models/sync", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("discovers startup models through cursor-agent without resolving an SDK key", async () => {
+    const resolveApiKey = vi.fn(() => undefined);
+    const discoverViaSdk = vi.fn();
+
+    const models = await discoverModelsForRefresh({
+      discoverFromCursorAgent: () => [
+        { id: "cursor-grok-4.6-high", name: "Cursor Grok 4.6" },
+      ],
+      resolveApiKey,
+      discoverViaSdk,
+    });
+
+    expect(models).toEqual([
+      { id: "cursor-grok-4.6-high", name: "Cursor Grok 4.6" },
+    ]);
+    expect(resolveApiKey).not.toHaveBeenCalled();
+    expect(discoverViaSdk).not.toHaveBeenCalled();
+  });
+
+  it("falls back to SDK discovery when cursor-agent fails and a real key exists", async () => {
+    const agentError = new Error("cursor-agent unavailable");
+    const discoverViaSdk = vi.fn(async () => [
+      { id: "gpt-5.6-sol-high", name: "GPT-5.6 Sol High" },
+    ]);
+
+    const models = await discoverModelsForRefresh({
+      discoverFromCursorAgent: () => {
+        throw agentError;
+      },
+      resolveApiKey: () => "real-key",
+      discoverViaSdk,
+    });
+
+    expect(models).toEqual([
+      { id: "gpt-5.6-sol-high", name: "GPT-5.6 Sol High" },
+    ]);
+    expect(discoverViaSdk).toHaveBeenCalledWith("real-key");
+  });
+
+  it("does not query the SDK or return static models when no live auth path works", async () => {
+    const agentError = new Error("cursor-agent unavailable");
+    const discoverViaSdk = vi.fn();
+
+    await expect(discoverModelsForRefresh({
+      discoverFromCursorAgent: () => {
+        throw agentError;
+      },
+      resolveApiKey: () => undefined,
+      discoverViaSdk,
+    })).rejects.toBe(agentError);
+
+    expect(discoverViaSdk).not.toHaveBeenCalled();
   });
 
   it("adds newly discovered models without removing existing entries", async () => {
@@ -112,6 +169,36 @@ describe("models/sync", () => {
       "custom-model": { name: "Custom" },
       "gpt-5.4-high": { name: "GPT-5.4 High" },
     });
+  });
+
+  it("adds discovered models to the V2 providers config", async () => {
+    const { deps, writeFileSync } = createDeps({
+      readFileSync: vi.fn(() =>
+        JSON.stringify({
+          providers: {
+            "cursor-acp": {
+              models: {
+                auto: { name: "Auto" },
+              },
+            },
+          },
+        }),
+      ),
+      discoverModels: vi.fn(async () => [
+        { id: "auto", name: "Auto" },
+        { id: "cursor-grok-4.6-high", name: "Cursor Grok 4.6" },
+      ]),
+    });
+
+    await autoRefreshModels(deps);
+
+    expect(writeFileSync).toHaveBeenCalledTimes(1);
+    const [, writtenConfig] = writeFileSync.mock.calls[0];
+    const parsed = JSON.parse(writtenConfig as string);
+    expect(parsed.providers["cursor-acp"].models["cursor-grok-4.6-high"]).toEqual({
+      name: "Cursor Grok 4.6",
+    });
+    expect(parsed.provider).toBeUndefined();
   });
 
   it("can disable startup model refresh", async () => {
