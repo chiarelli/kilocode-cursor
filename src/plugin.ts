@@ -202,6 +202,10 @@ let storedApiKey: string | undefined;
 export function setStoredApiKey(apiKey: string | undefined): void {
   storedApiKey = apiKey;
 }
+
+export function getStoredApiKey(): string | undefined {
+  return storedApiKey;
+}
 let cursorAgentAvailabilityCache: boolean | undefined;
 
 function getGlobalKey(): string {
