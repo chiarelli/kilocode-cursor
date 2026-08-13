@@ -32,6 +32,7 @@ function registration(onDispose: () => void = () => {}): Registration {
 function createContext() {
   const disposed: string[] = [];
   const toolAddCalls: any[][] = [];
+  let httpRequestHook: ((event: any) => Promise<void>) | undefined;
   let sessionContextHook: ((event: any) => Promise<void>) | undefined;
   let activeConnectionCalls = 0;
   let credential: any = { type: "key", key: "cursor-key" };
@@ -77,9 +78,10 @@ function createContext() {
     },
     session: {
       hook: async (name: string, callback: (event: any) => Promise<void>) => {
-        expect(name).toBe("context");
-        sessionContextHook = callback;
-        return registration(() => disposed.push("session"));
+        if (name === "context") sessionContextHook = callback;
+        else if (name === "http.request") httpRequestHook = callback;
+        else throw new Error(`Unexpected session hook: ${name}`);
+        return registration(() => disposed.push(`session:${name}`));
       },
     },
   };
@@ -91,6 +93,7 @@ function createContext() {
     toolAddCalls,
     activeConnectionCalls: () => activeConnectionCalls,
     setCredential: (value: any) => { credential = value; },
+    httpRequestHook: () => httpRequestHook,
     sessionContextHook: () => sessionContextHook,
   };
 }
@@ -114,6 +117,24 @@ describe("opencode V2 adapter", () => {
     expect(provider.settings.baseURL).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1$/);
     expect(provider.settings.baseURL).not.toBe("http://127.0.0.1:9/v1");
     expect(provider.api).toBeUndefined();
+  });
+
+  test("routes Cursor HTTP requests to the live proxy after config overlays", async () => {
+    const fixture = createContext();
+    await createV2Setup()(fixture.context);
+    const event = {
+      model: { providerID: "cursor-acp" },
+      request: new Request("http://127.0.0.1:9/v1/chat/completions", {
+        method: "POST",
+        body: "probe",
+      }),
+    };
+
+    await fixture.httpRequestHook()!(event);
+
+    expect(event.request.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+\/v1\/chat\/completions$/);
+    expect(event.request.url).not.toContain(":9/");
+    expect(await event.request.text()).toBe("probe");
   });
 
   test("registers complete tools with one V2 add argument", async () => {
@@ -186,6 +207,8 @@ describe("opencode V2 adapter", () => {
 
     expect(cleanup).toBeTypeOf("function");
     await cleanup!();
-    expect(fixture.disposed.sort()).toEqual(["catalog", "integration", "session", "tool"]);
+    expect(fixture.disposed.sort()).toEqual([
+      "catalog", "integration", "session:context", "session:http.request", "tool",
+    ]);
   });
 });
