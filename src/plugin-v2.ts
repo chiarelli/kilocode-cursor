@@ -19,6 +19,7 @@ import {
   ensureCursorProxyServer,
   resolveWorkspaceDirectory,
   ensurePluginDirectory,
+  setStoredApiKey,
 } from "./plugin.js";
 import { readMcpConfigs } from "./mcp/config.js";
 import { McpClientManager } from "./mcp/client-manager.js";
@@ -210,6 +211,16 @@ export function createV2Setup() {
     // Chat-params equivalent: force baseURL + inject MCP tool defs, and append
     // the available-tools system message on every turn.
     await ctx.session.hook("context", async (event: any) => {
+      // V1 filled this from auth.loader. In V2 resolve the active integration
+      // connection before every Cursor turn so the local proxy gets the key.
+      try {
+        const connection = await ctx.integration.connection.active(CURSOR_PROVIDER_ID);
+        const credential = connection && await ctx.integration.connection.resolve(connection);
+        if (credential?.type === "key") setStoredApiKey(credential.key);
+      } catch (err) {
+        log.debug("Could not resolve Cursor API key", { error: String(err) });
+      }
+
       const modelRef = event.model;
       const isCursor = modelRef?.providerID === CURSOR_PROVIDER_ID;
       if (!isCursor) return;

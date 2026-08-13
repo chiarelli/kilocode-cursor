@@ -198,6 +198,10 @@ const REUSE_EXISTING_PROXY = process.env.CURSOR_ACP_REUSE_EXISTING_PROXY !== "fa
 
 // Stored API key from auth loader (OpenCode auth store)
 let storedApiKey: string | undefined;
+
+export function setStoredApiKey(apiKey: string | undefined): void {
+  storedApiKey = apiKey;
+}
 let cursorAgentAvailabilityCache: boolean | undefined;
 
 function getGlobalKey(): string {
