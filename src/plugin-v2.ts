@@ -47,6 +47,17 @@ type V2ToolDefinition = {
   execute: (args: any, ctx: any) => Promise<unknown>;
   options: { codemode: true };
 };
+type V2SessionHook = {
+  (name: "context", callback: (event: {
+    model?: { providerID?: string };
+    system: Array<{ type: "text"; text: string }>;
+    tools: Record<string, { description: string; input: Record<string, unknown> }>;
+  }) => Promise<void>): Promise<V2Registration>;
+  (name: "http.request", callback: (event: {
+    model: { providerID: string };
+    request: Request;
+  }) => Promise<void>): Promise<V2Registration>;
+};
 type V2Context = {
   catalog: {
     transform: (callback: (draft: {
@@ -74,13 +85,17 @@ type V2Context = {
     }) => void) => Promise<V2Registration>;
   };
   session: {
-    hook: (name: "context", callback: (event: {
-      model?: { providerID?: string };
-      system: Array<{ type: "text"; text: string }>;
-      tools: Record<string, { description: string; input: Record<string, unknown> }>;
-    }) => Promise<void>) => Promise<V2Registration>;
+    hook: V2SessionHook;
   };
 };
+
+function routeRequestToProxy(request: Request, baseURL: string): Request {
+  const target = new URL(request.url);
+  const proxy = new URL(baseURL);
+  target.protocol = proxy.protocol;
+  target.host = proxy.host;
+  return new Request(target, request);
+}
 
 /** Convert a V1-style tool entry (with zod args) into a V2 tool definition. */
 function v2ToolFromV1(
@@ -194,6 +209,13 @@ export function createV2Setup() {
 
     const proxyBaseURL = await ensureCursorProxyServer(workspaceDirectory, router ?? undefined);
     log.debug("Proxy server started", { baseURL: proxyBaseURL });
+
+    // Config providers load after package plugins in V2 and can overwrite the
+    // catalog URL. Route at the HTTP boundary as the final source of truth.
+    registrations.push(await ctx.session.hook("http.request", async (event) => {
+      if (event.model.providerID !== CURSOR_PROVIDER_ID) return;
+      event.request = routeRequestToProxy(event.request, proxyBaseURL);
+    }));
 
     // Register the cursor-acp provider + auth via catalog/integration transforms.
     registrations.push(await ctx.catalog.transform((catalog) => {
