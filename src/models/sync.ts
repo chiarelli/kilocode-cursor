@@ -11,8 +11,9 @@ import {
   readFileSync as nodeReadFileSync,
   writeFileSync as nodeWriteFileSync,
 } from "node:fs";
-import { listModelsViaRunner } from "../client/sdk-child.js";
 import { resolveSdkApiKey } from "../auth.js";
+import { listModelsViaRunner } from "../client/sdk-child.js";
+import { discoverModelsFromCursorAgent } from "../cli/model-discovery.js";
 import { resolveOpenCodeConfigPath } from "../plugin-toggle.js";
 import { createLogger, type Logger } from "../utils/logger.js";
 import { mergeCursorModelEntries } from "./variants.js";
@@ -25,12 +26,32 @@ type ModelConfigEntry = { name: string };
 type ProviderConfig = { models?: Record<string, unknown> } & Record<string, unknown>;
 type OpenCodeConfig = {
   provider?: Record<string, ProviderConfig | undefined>;
+  providers?: Record<string, ProviderConfig | undefined>;
 } & Record<string, unknown>;
 
 export type DiscoveredModel = {
   id: string;
   name: string;
 };
+
+export async function discoverModelsForRefresh(
+  deps: {
+    discoverFromCursorAgent?: () => DiscoveredModel[];
+    resolveApiKey?: () => string | undefined;
+    discoverViaSdk?: (apiKey: string) => Promise<DiscoveredModel[]>;
+  } = {},
+): Promise<DiscoveredModel[]> {
+  try {
+    return (deps.discoverFromCursorAgent ?? discoverModelsFromCursorAgent)();
+  } catch (agentError) {
+    const apiKey = (deps.resolveApiKey ?? (() => resolveSdkApiKey({ env: process.env })))();
+    if (!apiKey) throw agentError;
+
+    if (deps.discoverViaSdk) return deps.discoverViaSdk(apiKey);
+    const models = await listModelsViaRunner(apiKey);
+    return models.map((model) => ({ id: model.id, name: model.name }));
+  }
+}
 
 type AutoRefreshModelsDeps = {
   defer: () => Promise<void>;
@@ -44,14 +65,7 @@ type AutoRefreshModelsDeps = {
 
 const defaultDeps: AutoRefreshModelsDeps = {
   defer: () => Promise.resolve(),
-  discoverModels: async () => {
-    const apiKey = resolveSdkApiKey({ env: process.env });
-    if (!apiKey) {
-      throw new Error("CURSOR_API_KEY not set");
-    }
-    const models = await listModelsViaRunner(apiKey);
-    return models.map((m) => ({ id: m.id, name: m.name }));
-  },
+  discoverModels: discoverModelsForRefresh,
   env: process.env,
   existsSync: nodeExistsSync,
   log,
@@ -73,12 +87,12 @@ function parseConfig(raw: string): OpenCodeConfig | null {
 }
 
 function getProviderConfig(config: OpenCodeConfig): ProviderConfig | null {
-  if (!isRecord(config.provider)) {
-    return null;
+  for (const providers of [config.providers, config.provider]) {
+    if (!isRecord(providers)) continue;
+    const provider = providers[PROVIDER_ID];
+    if (isRecord(provider)) return provider as ProviderConfig;
   }
-
-  const provider = config.provider[PROVIDER_ID];
-  return isRecord(provider) ? (provider as ProviderConfig) : null;
+  return null;
 }
 
 function getExistingModels(provider: ProviderConfig): Record<string, unknown> {
