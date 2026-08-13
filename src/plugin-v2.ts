@@ -17,7 +17,6 @@ import {
   buildAvailableToolsSystemMessage,
   buildToolHookEntries,
   ensureCursorProxyServer,
-  resolveWorkspaceDirectory,
   ensurePluginDirectory,
   setStoredApiKey,
 } from "./plugin.js";
@@ -36,18 +35,59 @@ import { SkillLoader } from "./tools/skills/loader.js";
 import { SkillResolver } from "./tools/skills/resolver.js";
 import { LocalExecutor } from "./tools/executors/local.js";
 import { executeWithChain } from "./tools/core/executor.js";
-import { buildLocalFallbackTools, shouldRegisterNativeToolHook } from "./plugin.js";
-import { createOpencodeClient } from "@opencode-ai/sdk";
-import { TOOL_HOOK_EXCLUSIONS, TOOL_LOOP_MODE } from "./plugin.js";
+import { buildLocalFallbackTools, TOOL_LOOP_MODE } from "./plugin.js";
 
 const log = createLogger("plugin-v2");
+
+type V2Registration = { dispose: () => Promise<void> | void };
+type V2ToolDefinition = {
+  name: string;
+  description: string;
+  input: Record<string, unknown>;
+  execute: (args: any, ctx: any) => Promise<unknown>;
+  options: { codemode: true };
+};
+type V2Context = {
+  catalog: {
+    transform: (callback: (draft: {
+      provider: { update: (id: string, update: (provider: {
+        name: string;
+        settings?: Record<string, unknown>;
+      }) => void) => void };
+    }) => void) => Promise<V2Registration>;
+  };
+  integration: {
+    transform: (callback: (draft: {
+      method: { update: (input: unknown) => void };
+    }) => void) => Promise<V2Registration>;
+    connection: {
+      active: (integrationID: string) => Promise<Record<string, unknown> | undefined>;
+      resolve: (connection: Record<string, unknown>) => Promise<{
+        type: string;
+        key?: string;
+      } | undefined>;
+    };
+  };
+  tool: {
+    transform: (callback: (draft: {
+      add: (tool: V2ToolDefinition) => void;
+    }) => void) => Promise<V2Registration>;
+  };
+  session: {
+    hook: (name: "context", callback: (event: {
+      model?: { providerID?: string };
+      system: Array<{ type: "text"; text: string }>;
+      tools: Record<string, { description: string; input: Record<string, unknown> }>;
+    }) => Promise<void>) => Promise<V2Registration>;
+  };
+};
 
 /** Convert a V1-style tool entry (with zod args) into a V2 tool definition. */
 function v2ToolFromV1(
   name: string,
   entry: any,
   jsonSchema?: Record<string, unknown>,
-): { description: string; input: Record<string, unknown>; execute: (args: any, ctx: any) => Promise<unknown> } {
+): V2ToolDefinition {
   const description = typeof entry?.description === "string" ? entry.description : name;
   // Prefer the original JSON schema when available; fall back to an empty object.
   const input =
@@ -57,8 +97,10 @@ function v2ToolFromV1(
   const v1Execute = typeof entry?.execute === "function" ? entry.execute : async () => ({ content: "" });
 
   return {
+    name,
     description,
     input,
+    options: { codemode: true },
     async execute(args: any, executeCtx: any) {
       const result = await v1Execute(args, executeCtx);
       // V1 tools return a string; V2 expects { content } or { output, content }.
@@ -71,7 +113,7 @@ function v2ToolFromV1(
 }
 
 export function createV2Setup() {
-  return async (ctx: any) => {
+  return async (ctx: V2Context) => {
     const state = shouldEnableCursorPlugin();
     if (!state.enabled) {
       log.info("Plugin disabled in OpenCode config; skipping initialization", {
@@ -81,12 +123,12 @@ export function createV2Setup() {
       return;
     }
 
-    const workspaceDirectory = resolveWorkspaceDirectory(ctx.worktree, ctx.directory);
+    const registrations: V2Registration[] = [];
+
+    // ponytail: V2 exposes no workspace path; use cwd until its Context adds one.
+    const workspaceDirectory = process.cwd();
     log.debug("V2 plugin initializing", {
-      directory: ctx.directory,
-      worktree: ctx.worktree,
       workspaceDirectory,
-      cwd: process.cwd(),
     });
 
     await ensurePluginDirectory();
@@ -127,9 +169,6 @@ export function createV2Setup() {
     // Tools (skills) discovery/execution wiring (same as V1).
     const toolsEnabled = process.env.CURSOR_ACP_ENABLE_OPENCODE_TOOLS !== "false";
     const legacyProxyToolPathsEnabled = toolsEnabled && TOOL_LOOP_MODE === "proxy-exec";
-    const serverClient = legacyProxyToolPathsEnabled
-      ? createOpencodeClient({ baseUrl: ctx.serverUrl?.toString(), directory: workspaceDirectory })
-      : null;
 
     const localRegistry = new CoreRegistry();
     registerDefaultTools(localRegistry);
@@ -147,45 +186,29 @@ export function createV2Setup() {
         })
       : null;
 
-    let lastToolNames: string[] = [];
-    let lastToolMap: Array<{ id: string; name: string }> = [];
-
-    const refreshTools = async () => {
-      toolsByName.clear();
-      const toolEntries: any[] = [];
-      const localTools = buildLocalFallbackTools(localRegistry, TOOL_LOOP_MODE);
-      for (const asTool of localTools) {
-        toolsByName.set(asTool.name, asTool);
-        toolEntries.push({ type: "function", function: { name: asTool.name, parameters: {} } });
-      }
-      const skills = skillLoader.load([...localTools]);
-      skillResolver = new SkillResolver(skills);
-      lastToolNames = toolEntries.map((e) => e.function.name);
-      lastToolMap = localTools.map((t: any) => ({ id: t.id, name: t.name }));
-      return toolEntries;
-    };
+    const localTools = buildLocalFallbackTools(localRegistry, TOOL_LOOP_MODE);
+    for (const tool of localTools) toolsByName.set(tool.name, tool);
+    skillResolver = new SkillResolver(skillLoader.load(localTools));
+    const lastToolNames = localTools.map((tool) => tool.name);
+    const lastToolMap = localTools.map((tool) => ({ id: tool.id, name: tool.name }));
 
     const proxyBaseURL = await ensureCursorProxyServer(workspaceDirectory, router ?? undefined);
     log.debug("Proxy server started", { baseURL: proxyBaseURL });
 
     // Register the cursor-acp provider + auth via catalog/integration transforms.
-    await ctx.catalog.transform((catalog: any) => {
-      catalog.provider.update(CURSOR_PROVIDER_ID, (p: any) => {
+    registrations.push(await ctx.catalog.transform((catalog) => {
+      catalog.provider.update(CURSOR_PROVIDER_ID, (p) => {
         p.name = "Cursor";
-        p.api = {
-          type: "aisdk",
-          package: "aisdk:@ai-sdk/openai-compatible",
-          settings: { baseURL: proxyBaseURL },
-        };
+        p.settings = { ...p.settings, baseURL: proxyBaseURL };
       });
-    });
+    }));
 
-    await ctx.integration.transform((integrations: any) => {
+    registrations.push(await ctx.integration.transform((integrations) => {
       integrations.method.update({
         integrationID: CURSOR_PROVIDER_ID,
         method: { type: "key", label: "Cursor API Key (cursor.com/settings)" },
       });
-    });
+    }));
 
     // Register local + MCP tools as V2 tools (best-effort).
     try {
@@ -198,51 +221,31 @@ export function createV2Setup() {
         schemaByName.set(t.name, t.parameters);
       }
 
-      await ctx.tool.transform((tools: any) => {
+      registrations.push(await ctx.tool.transform((tools) => {
         for (const [name, entry] of Object.entries(allEntries)) {
           const def = v2ToolFromV1(name, entry, schemaByName.get(name));
-          tools.add(name, def, { codemode: true });
+          tools.add(def);
         }
-      });
+      }));
     } catch (err) {
       log.debug("Tool registration failed", { error: String(err) });
     }
 
-    // Chat-params equivalent: force baseURL + inject MCP tool defs, and append
-    // the available-tools system message on every turn.
-    await ctx.session.hook("context", async (event: any) => {
+    // Resolve credentials and append the available-tools message on Cursor turns.
+    registrations.push(await ctx.session.hook("context", async (event) => {
+      const modelRef = event.model;
+      const isCursor = modelRef?.providerID === CURSOR_PROVIDER_ID;
+      if (!isCursor) return;
+
       // V1 filled this from auth.loader. In V2 resolve the active integration
       // connection before every Cursor turn so the local proxy gets the key.
       try {
         const connection = await ctx.integration.connection.active(CURSOR_PROVIDER_ID);
         const credential = connection && await ctx.integration.connection.resolve(connection);
-        if (credential?.type === "key") setStoredApiKey(credential.key);
+        setStoredApiKey(credential?.type === "key" ? credential.key : undefined);
       } catch (err) {
+        setStoredApiKey(undefined);
         log.debug("Could not resolve Cursor API key", { error: String(err) });
-      }
-
-      const modelRef = event.model;
-      const isCursor = modelRef?.providerID === CURSOR_PROVIDER_ID;
-      if (!isCursor) return;
-
-      if (toolsEnabled && TOOL_LOOP_MODE === "opencode") {
-        const existingTools = event.tools;
-        if (existingTools == null) {
-          const refreshed = await refreshTools();
-          event.tools = refreshed;
-        }
-      }
-
-      if (mcpToolDefs.length > 0) {
-        // Surface MCP tools through the tools record so the model can call them.
-        const current = event.tools && typeof event.tools === "object" ? event.tools : {};
-        for (const def of mcpToolDefs) {
-          const fname = def?.function?.name;
-          if (fname && !(fname in current)) {
-            current[fname] = def;
-          }
-        }
-        event.tools = current;
       }
 
       const systemMessage = buildAvailableToolsSystemMessage(
@@ -251,6 +254,12 @@ export function createV2Setup() {
       if (systemMessage) {
         event.system.push({ type: "text", text: systemMessage });
       }
-    });
+    }));
+
+    return async () => {
+      await Promise.allSettled(registrations.reverse().map((item) => item.dispose()));
+      await mcpManager.disconnectAll();
+      setStoredApiKey(undefined);
+    };
   };
 }
