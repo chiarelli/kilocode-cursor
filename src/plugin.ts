@@ -182,7 +182,7 @@ export async function ensurePluginDirectory(): Promise<void> {
   }
 }
 
-const CURSOR_PROVIDER_ID = "cursor-acp";
+export const CURSOR_PROVIDER_ID = "cursor-acp";
 const CURSOR_PROVIDER_PREFIX = `${CURSOR_PROVIDER_ID}/`;
 
 export function shouldProcessModel(model: string | undefined): boolean {
@@ -805,7 +805,7 @@ function parseToolLoopMode(value: string | undefined): { mode: ToolLoopMode; val
 }
 
 const TOOL_LOOP_MODE_RAW = process.env.CURSOR_ACP_TOOL_LOOP_MODE;
-const { mode: TOOL_LOOP_MODE, valid: TOOL_LOOP_MODE_VALID } = parseToolLoopMode(TOOL_LOOP_MODE_RAW);
+export const { mode: TOOL_LOOP_MODE, valid: TOOL_LOOP_MODE_VALID } = parseToolLoopMode(TOOL_LOOP_MODE_RAW);
 const PROVIDER_BOUNDARY_MODE_RAW = process.env.CURSOR_ACP_PROVIDER_BOUNDARY;
 const {
   mode: PROVIDER_BOUNDARY_MODE,
@@ -1188,7 +1188,7 @@ async function findFirstAllowedToolCallInOutput(
   return { toolCall: null, terminationMessage: null };
 }
 
-async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: ToolRouter): Promise<string> {
+export async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: ToolRouter): Promise<string> {
   const key = getGlobalKey();
   const g = globalThis as any;
   const normalizedWorkspace = normalizeWorkspaceForCompare(workspaceDirectory);
@@ -2669,7 +2669,7 @@ function applyToolContextDefaults(
 /**
  * Build tool hook entries from local registry
  */
-const TOOL_HOOK_EXCLUSIONS = new Set(["grep"]);
+export const TOOL_HOOK_EXCLUSIONS = new Set(["grep"]);
 const OPENCODE_NATIVE_TOOL_HOOK_EXCLUSIONS = new Set(["edit", "write"]);
 
 // Exported for mode-boundary tests without initializing the full plugin runtime.
@@ -2726,7 +2726,7 @@ export function buildLocalFallbackTools(
   });
 }
 
-function buildToolHookEntries(registry: CoreRegistry, fallbackBaseDir?: string): Record<string, any> {
+export function buildToolHookEntries(registry: CoreRegistry, fallbackBaseDir?: string): Record<string, any> {
   const entries: Record<string, any> = {};
   const sessionWorkspaceBySession = new Map<string, string>();
   const tools = registry.list();
