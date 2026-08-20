@@ -10,8 +10,8 @@ import {
 } from "../../src/plugin-toggle";
 
 describe("plugin toggle", () => {
-  it("enables plugin when plugin array includes cursor-kilo", () => {
-    expect(isCursorPluginEnabledInConfig({ plugin: ["cursor-kilo"] })).toBe(true);
+  it("enables plugin when plugin array includes cursor provider", () => {
+    expect(isCursorPluginEnabledInConfig({ plugin: ["cursor"] })).toBe(true);
   });
 
   it("enables plugin when plugin array includes npm package name", () => {
@@ -27,7 +27,7 @@ describe("plugin toggle", () => {
   });
 
   it("keeps legacy behavior when plugin array is missing", () => {
-    expect(isCursorPluginEnabledInConfig({ provider: { "cursor-kilo": {} } })).toBe(true);
+    expect(isCursorPluginEnabledInConfig({ provider: { cursor: {} } })).toBe(true);
     expect(isCursorPluginEnabledInConfig({ provider: {} })).toBe(true);
   });
 

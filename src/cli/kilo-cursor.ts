@@ -25,6 +25,10 @@ import { parseCursorBackendPreference } from "../provider/backend.js";
 import { isAgentPoolEnabled, parseAgentPoolIdleMs } from "../client/cursor-agent-child.js";
 import { groupCursorModels, mergeCursorModelEntries } from "../models/variants.js";
 import { mergeKiloModelCatalog } from "../models/kilo-catalog.js";
+import {
+  discoverModelsAuthenticated,
+  migrateLegacyModelKeys,
+} from "../models/discover-with-auth.js";
 import { resolveOpenCodeConfigPath } from "../plugin-toggle.js";
 import { isSessionResumeEnabled } from "../proxy/session-resume.js";
 import { BRIDGE_JSON_CONTEXT } from "../proxy/bridge-json.js";
@@ -202,7 +206,7 @@ function checkSdkApiKey(config: unknown): CheckResult {
     warning: backend !== "sdk",
     message: backend === "sdk"
       ? "not configured - required for CURSOR_KILO_BACKEND=sdk"
-      : "not configured - required only for CURSOR_KILO_BACKEND=sdk or when cursor-agent is unavailable",
+      : "not configured - required when CURSOR_KILO_BACKEND=sdk or when no Kilo auth credentials exist",
   };
 }
 
@@ -616,28 +620,30 @@ function ensurePluginLink(pluginSource: string, pluginPath: string, copyMode: bo
   symlinkSync(pluginSource, pluginPath);
 }
 
-function discoverModelsSafe() {
-  try {
-    return discoverModelsFromCursorAgent();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    console.warn(`Warning: cursor-agent models failed; using fallback models (${message})`);
-    return fallbackModels();
+async function discoverModelsSafe(): Promise<DiscoveredModel[]> {
+  const result = await discoverModelsAuthenticated();
+  for (const warning of result.warnings) {
+    console.warn(`Warning: ${warning}`);
   }
+  if (result.source !== "fallback") {
+    console.log(`Discovered ${result.models.length} models via ${result.source}`);
+  }
+  return result.models;
 }
 
-function syncModelsIntoProvider(config: any, options: Options): SyncModelsResult {
+async function syncModelsIntoProvider(config: any, options: Options): Promise<SyncModelsResult> {
   const useVariants = options.variants ?? DEFAULT_SYNC_VARIANTS;
   const useCompact = options.compact ?? DEFAULT_SYNC_COMPACT;
   if (useCompact && !useVariants) {
     throw new Error("--compact requires --variants");
   }
 
-  const discoveredModels = discoverModelsSafe();
+  const discoveredModels = await discoverModelsSafe();
   const provider = config.provider[PROVIDER_ID];
   const existingModels = provider.models && typeof provider.models === "object"
     ? provider.models
     : {};
+  migrateLegacyModelKeys(existingModels);
   const beforeModels = snapshotModels(existingModels);
 
   // Kilo catalog format (cursor/model + reasoning variants) — default
@@ -931,6 +937,10 @@ export function shouldInstallCursorBridge(
 }
 
 function commandInstall(options: Options) {
+  void commandInstallAsync(options);
+}
+
+async function commandInstallAsync(options: Options) {
   const { opencodeDir, configPath, pluginPath } = resolvePaths(options);
   const baseUrl = options.baseUrl || DEFAULT_BASE_URL;
   const copyMode = options.copy === true;
@@ -944,7 +954,7 @@ function commandInstall(options: Options) {
   ensureProvider(config, baseUrl);
 
   if (!options.skipModels) {
-    const result = syncModelsIntoProvider(config, options);
+    const result = await syncModelsIntoProvider(config, options);
     printSyncResult(result, options);
   }
 
@@ -973,11 +983,15 @@ function commandInstall(options: Options) {
 }
 
 function commandSyncModels(options: Options) {
+  void commandSyncModelsAsync(options);
+}
+
+async function commandSyncModelsAsync(options: Options) {
   const { configPath } = resolvePaths(options);
   const config = readConfig(configPath);
   ensureProvider(config, options.baseUrl || DEFAULT_BASE_URL);
 
-  const result = syncModelsIntoProvider(config, options);
+  const result = await syncModelsIntoProvider(config, options);
 
   if (!options.dryRun) {
     writeConfig(configPath, config, options.noBackup === true, options.json === true);
@@ -996,7 +1010,11 @@ function commandSyncModels(options: Options) {
 }
 
 function commandModels(options: Options) {
-  const models = discoverModelsSafe();
+  void commandModelsAsync(options);
+}
+
+async function commandModelsAsync(options: Options) {
+  const models = await discoverModelsSafe();
   const explanation = explainCursorModels(models);
 
   if (options.json) {

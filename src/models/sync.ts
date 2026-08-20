@@ -17,6 +17,7 @@ import { discoverModelsFromCursorAgent } from "../cli/model-discovery.js";
 import { resolveOpenCodeConfigPath } from "../plugin-toggle.js";
 import { createLogger, type Logger } from "../utils/logger.js";
 import { mergeKiloModelCatalog } from "./kilo-catalog.js";
+import { discoverModelsAuthenticated } from "./discover-with-auth.js";
 import { mergeCursorModelEntries } from "./variants.js";
 
 const log = createLogger("model-sync");
@@ -37,11 +38,23 @@ export type DiscoveredModel = {
 
 export async function discoverModelsForRefresh(
   deps: {
+    discoverAuthenticated?: () => Promise<DiscoveredModel[]>;
     discoverFromCursorAgent?: () => DiscoveredModel[];
     resolveApiKey?: () => string | undefined;
     discoverViaSdk?: (apiKey: string) => Promise<DiscoveredModel[]>;
   } = {},
 ): Promise<DiscoveredModel[]> {
+  if (deps.discoverAuthenticated) {
+    return deps.discoverAuthenticated();
+  }
+
+  try {
+    const result = await discoverModelsAuthenticated();
+    return result.models;
+  } catch {
+    // fall through to legacy path
+  }
+
   try {
     return (deps.discoverFromCursorAgent ?? discoverModelsFromCursorAgent)();
   } catch (agentError) {

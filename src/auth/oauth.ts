@@ -222,8 +222,13 @@ export function buildCursorAuthMethods(providerId: string) {
           return {
             type: "success" as const,
             provider: providerId,
-            key: result.accessToken,
-            metadata: { refreshToken: result.refreshToken, sourceApiKey: true },
+            // Keep the raw user API key for @cursor/sdk; store exchanged tokens in metadata.
+            key: apiKey,
+            metadata: {
+              refreshToken: result.refreshToken,
+              accessToken: result.accessToken,
+              sourceApiKey: "true",
+            },
           };
         } catch (err) {
           log.debug("API key exchange failed, storing raw key for cursor-agent", { error: String(err) });

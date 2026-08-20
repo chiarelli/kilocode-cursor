@@ -31,9 +31,21 @@ export function parseCursorModelsOutput(output: string): DiscoveredModel[] {
   return models;
 }
 
-export function discoverModelsFromCursorAgent(): DiscoveredModel[] {
+export function discoverModelsFromCursorAgent(options?: {
+  accessToken?: string;
+  apiKey?: string;
+}): DiscoveredModel[] {
+  const env: NodeJS.ProcessEnv = { ...process.env };
+  if (options?.accessToken) {
+    env.CURSOR_AUTH_TOKEN = options.accessToken;
+  }
+  if (options?.apiKey) {
+    env.CURSOR_API_KEY = options.apiKey;
+  }
+
   const raw = execFileSync(resolveCursorAgentBinary(), ["models"], {
     encoding: "utf8",
+    env,
     ...(process.platform !== "win32" && { killSignal: "SIGTERM" as const }),
     stdio: ["ignore", "pipe", "pipe"],
     timeout: MODEL_DISCOVERY_TIMEOUT_MS,

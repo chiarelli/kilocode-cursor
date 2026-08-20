@@ -12,7 +12,7 @@
 import { getCursorModelCost, type OpenCodeModelCost } from "./pricing.js";
 import type { DiscoveredCursorModel } from "../cli/model-discovery.js";
 
-export const KILO_MODEL_PREFIX = "cursor/";
+export const KILO_MODEL_PREFIX = "";
 
 const EFFORT_VARIANTS = new Set([
   "none", "low", "medium", "high", "max", "xhigh",
@@ -119,7 +119,7 @@ function parseModel(model: DiscoveredCursorModel): ParsedModel | null {
 
 function configKey(family: string, thinking: boolean): string {
   const slug = thinking ? `${family}-thinking` : family;
-  return `${KILO_MODEL_PREFIX}${slug}`;
+  return slug;
 }
 
 function inferCapabilities(family: string, thinking: boolean): Partial<KiloModelEntry> {
@@ -231,6 +231,61 @@ export function buildKiloModelCatalog(discovered: DiscoveredCursorModel[]): Kilo
   };
 }
 
+/** Build a runtime resolver from synced provider.models config entries. */
+export function buildKiloCatalogFromConfigModels(
+  models: Record<string, unknown>,
+): KiloCatalogResult {
+  const catalogModels: Record<string, KiloModelEntry> = {};
+  const wireResolver = new Map<string, string>();
+
+  const registerWire = (configKey: string, variant: string | null, wireId: string) => {
+    wireResolver.set(variant ? `${configKey}\0${variant}` : `${configKey}\0`, wireId);
+  };
+
+  for (const [key, raw] of Object.entries(models)) {
+    if (!raw || typeof raw !== "object") continue;
+    const entry = raw as KiloModelEntry;
+    catalogModels[key] = entry;
+
+    if (entry.options?.cursorModel) {
+      registerWire(key, null, entry.options.cursorModel);
+    }
+
+    if (entry.variants) {
+      for (const [variantKey, variant] of Object.entries(entry.variants)) {
+        const wire = variant.options?.cursorModel;
+        if (wire) {
+          registerWire(key, variantKey, wire);
+        }
+        const effort = variant.reasoning?.effort;
+        if (effort && wire) {
+          registerWire(key, effort, wire);
+        }
+      }
+    }
+  }
+
+  const resolveWireModel = (configModelId: string, variantKey?: string): string | undefined => {
+    const direct = wireResolver.get(`${configModelId}\0${variantKey ?? ""}`);
+    if (direct) return direct;
+
+    const entry = catalogModels[configModelId];
+    if (!entry) return undefined;
+
+    if (variantKey && entry.variants?.[variantKey]?.options?.cursorModel) {
+      return entry.variants[variantKey].options!.cursorModel;
+    }
+
+    return entry.options?.cursorModel;
+  };
+
+  return {
+    models: catalogModels,
+    wireIdByConfigKey: wireResolver,
+    resolveWireModel,
+  };
+}
+
 export function mergeKiloModelCatalog(
   existing: Record<string, unknown>,
   discovered: DiscoveredCursorModel[],
@@ -242,6 +297,7 @@ export function mergeKiloModelCatalog(
 
   if (compact) {
     const groupedWireIds = new Set<string>();
+    const generatedKeys = new Set(Object.keys(generated));
     for (const entry of Object.values(generated)) {
       const e = entry as KiloModelEntry;
       if (e.options?.cursorModel) groupedWireIds.add(e.options.cursorModel);
@@ -252,7 +308,7 @@ export function mergeKiloModelCatalog(
       }
     }
     for (const key of Object.keys(merged)) {
-      if (key.startsWith(KILO_MODEL_PREFIX)) continue;
+      if (generatedKeys.has(key) || key.startsWith("cursor/")) continue;
       if (groupedWireIds.has(key) || discovered.some((d) => d.id === key)) {
         delete merged[key];
         removedCount++;
@@ -276,6 +332,15 @@ function mergePreservingUserFields(existing: unknown, generated: KiloModelEntry)
   return merged;
 }
 
+/** Normalize Kilo model ids that may include duplicate provider prefixes. */
+export function normalizeConfigModelId(raw: string): string {
+  let id = raw.trim().replace(/^cursor-kilo\//, "").replace(/^cursor\//, "");
+  while (id.startsWith("cursor/")) {
+    id = id.slice("cursor/".length);
+  }
+  return id;
+}
+
 /** Resolve runtime cursor wire model from Kilo request body */
 export function resolveWireModelFromRequest(
   catalog: KiloCatalogResult | null,
@@ -289,21 +354,49 @@ export function resolveWireModelFromRequest(
   // Variant from Kilo provider options
   const variant = extractVariantEffort(body);
   if (catalog && raw) {
-    const configKey = raw.startsWith(KILO_MODEL_PREFIX) ? raw : `${KILO_MODEL_PREFIX}${raw.replace(/^cursor-kilo\//, "").replace(/^cursor\//, "")}`;
+    const configKey = normalizeConfigModelId(raw);
     const resolved = catalog.resolveWireModel(configKey, variant ?? undefined);
     if (resolved) return resolved;
+
+    if (variant) {
+      const family = configKey.replace(/^cursor\//, "");
+      const suffixWire = `${family}-${variant}`;
+      if (suffixWire !== family) return suffixWire;
+    }
   }
 
-  return raw.replace(/^cursor-kilo\//, "").replace(/^cursor\//, "") || "auto";
+  const normalized = normalizeConfigModelId(raw);
+  return normalized || "auto";
 }
 
 function extractVariantEffort(body: Record<string, unknown>): string | null {
-  const reasoning = body.reasoning;
-  if (reasoning && typeof reasoning === "object" && !Array.isArray(reasoning)) {
-    const effort = (reasoning as Record<string, unknown>).effort;
-    if (typeof effort === "string") return effort;
+  for (const source of collectReasoningSources(body)) {
+    const effort = readReasoningEffort(source);
+    if (effort) return effort;
   }
+
   const variant = body.variant;
-  if (typeof variant === "string") return variant;
+  if (typeof variant === "string" && variant.length > 0) return variant;
+
   return null;
+}
+
+function collectReasoningSources(body: Record<string, unknown>): unknown[] {
+  const sources: unknown[] = [body.reasoning, body.options, body.providerOptions];
+  const providerOptions = body.providerOptions;
+  if (providerOptions && typeof providerOptions === "object" && !Array.isArray(providerOptions)) {
+    const cursor = (providerOptions as Record<string, unknown>).cursor;
+    sources.push(cursor);
+    if (cursor && typeof cursor === "object" && !Array.isArray(cursor)) {
+      sources.push((cursor as Record<string, unknown>).reasoning);
+      sources.push((cursor as Record<string, unknown>).options);
+    }
+  }
+  return sources;
+}
+
+function readReasoningEffort(source: unknown): string | null {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const effort = (source as Record<string, unknown>).effort;
+  return typeof effort === "string" && effort.length > 0 ? effort : null;
 }

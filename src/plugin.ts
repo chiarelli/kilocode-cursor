@@ -30,6 +30,15 @@ import { createLogger } from "./utils/logger.js";
 import { RequestPerf } from "./utils/perf.js";
 import { parseAgentError, formatErrorForUser, stripAnsi, isResumeSpecificFailure } from "./utils/errors.js";
 import { buildCursorAuthMethods, isExpiringSoon, refreshAccessToken } from "./auth/oauth.js";
+import { readStoredAuth } from "./kilo/auth-store.js";
+import {
+  classifyStoredAuth,
+  describeCredentialRequirement,
+  oauthRequiresCursorAgent,
+  sdkApiKeyFromCredential,
+  type CursorCredential,
+} from "./kilo/credential.js";
+import { syncOAuthToCursorCliConfig } from "./kilo/cursor-cli-config.js";
 import { buildPromptFromMessages, buildToolFingerprint } from "./proxy/prompt-builder.js";
 import {
   applyBridgeJsonPrompt,
@@ -61,6 +70,12 @@ import { ToolRouter } from "./tools/router.js";
 import { SkillLoader } from "./tools/skills/loader.js";
 import { SkillResolver } from "./tools/skills/resolver.js";
 import { autoRefreshModels } from "./models/sync.js";
+import {
+  loadRuntimeModelCatalog,
+  resolveChatParamsWireModel,
+  resolveProxyRuntimeModel,
+} from "./models/runtime-catalog.js";
+import type { KiloCatalogResult } from "./models/kilo-catalog.js";
 import { readMcpConfigs } from "./mcp/config.js";
 import { McpClientManager } from "./mcp/client-manager.js";
 import {
@@ -199,6 +214,61 @@ const REUSE_EXISTING_PROXY = process.env.CURSOR_KILO_REUSE_EXISTING_PROXY !== "f
 
 // Stored API key from auth loader (OpenCode auth store)
 let storedApiKey: string | undefined;
+let storedCredential: CursorCredential | undefined;
+let cachedGetAuth: (() => Promise<Auth>) | undefined;
+
+async function applyAuthRecord(auth: Auth | undefined): Promise<void> {
+  storedCredential = classifyStoredAuth(auth);
+  storedApiKey = sdkApiKeyFromCredential(storedCredential);
+
+  if (!auth) return;
+
+  if (auth.type === "oauth" && auth.access) {
+    let access = auth.access;
+    if (auth.refresh && isExpiringSoon(auth.access)) {
+      try {
+        const refreshed = await refreshAccessToken(auth.refresh);
+        access = refreshed.accessToken;
+        storedCredential = {
+          kind: "oauth-jwt",
+          accessToken: access,
+          refreshToken: refreshed.refreshToken,
+        };
+        storedApiKey = undefined;
+      } catch {
+        // Keep existing access token if refresh fails.
+      }
+    }
+    await syncOAuthToCursorCliConfig(access, auth.refresh);
+    log.debug("Stored OAuth access token from auth store");
+    return;
+  }
+
+  if (auth.type === "api" && auth.key) {
+    storedCredential = classifyStoredAuth(auth);
+    storedApiKey = sdkApiKeyFromCredential(storedCredential);
+    log.debug("Stored API credential from auth store", { kind: storedCredential?.kind });
+  }
+}
+
+async function ensureStoredAuthLoaded(): Promise<void> {
+  if (storedCredential || storedApiKey) return;
+
+  if (cachedGetAuth) {
+    try {
+      await applyAuthRecord(await cachedGetAuth());
+    } catch (err) {
+      log.debug("Failed to load auth via getAuth()", { error: String(err) });
+    }
+    if (storedCredential || storedApiKey) return;
+  }
+
+  try {
+    await applyAuthRecord(await readStoredAuth(CURSOR_PROVIDER_ID));
+  } catch (err) {
+    log.debug("Failed to load auth from Kilo auth store", { error: String(err) });
+  }
+}
 
 export function setStoredApiKey(apiKey: string | undefined): void {
   storedApiKey = apiKey;
@@ -240,11 +310,31 @@ function resolveBackendForRequest(sdkApiKey: string | undefined): CursorRuntimeB
     });
   }
 
+  if (parsed.preference === "sdk") {
+    return "sdk";
+  }
+
+  if (parsed.preference === "cursor-agent") {
+    return "cursor-agent";
+  }
+
+  // Auto: OAuth JWT → cursor-agent (after cli-config sync). Raw API keys → SDK.
+  if (oauthRequiresCursorAgent(storedCredential)) {
+    return "cursor-agent";
+  }
+
   return selectBackendForRequest({
     preference: parsed.preference,
     cursorAgentAvailable: isCursorAgentAvailable(),
     sdkApiKey,
   });
+}
+
+function missingBackendAuthMessage(backend: CursorRuntimeBackend): string {
+  if (backend === "sdk") {
+    return "Cursor SDK backend requires a Cursor API key (cursor.com/settings). OAuth browser login needs cursor-agent installed, or re-auth with API key: kilo auth login --provider cursor";
+  }
+  return describeCredentialRequirement(storedCredential);
 }
 
 
@@ -1197,7 +1287,11 @@ async function findFirstAllowedToolCallInOutput(
   return { toolCall: null, terminationMessage: null };
 }
 
-export async function ensureCursorProxyServer(workspaceDirectory: string, toolRouter?: ToolRouter): Promise<string> {
+export async function ensureCursorProxyServer(
+  workspaceDirectory: string,
+  toolRouter?: ToolRouter,
+  modelCatalog?: KiloCatalogResult | null,
+): Promise<string> {
   const key = getGlobalKey();
   const g = globalThis as any;
   const normalizedWorkspace = normalizeWorkspaceForCompare(workspaceDirectory);
@@ -1219,6 +1313,9 @@ export async function ensureCursorProxyServer(workspaceDirectory: string, toolRo
       storedApiKey,
       authorizationHeader: authHeader,
     });
+
+  const resolveRequestModel = (body: Record<string, unknown>): string =>
+    resolveProxyRuntimeModel(modelCatalog ?? null, body);
 
       const handler = async (req: Request): Promise<Response> => {
         try {
@@ -1290,13 +1387,36 @@ export async function ensureCursorProxyServer(workspaceDirectory: string, toolRo
       const toolLoopGuard = createToolLoopGuard(messages, TOOL_LOOP_MAX_REPEAT);
       const boundaryContext = createBoundaryRuntimeContext("bun-handler");
 
-      const model = boundaryContext.run("resolveRuntimeModel", (boundary) =>
-        boundary.resolveRuntimeModel(body?.model, body?.cursorModel),
-      );
+      const model = resolveRequestModel(body as Record<string, unknown>);
+      await ensureStoredAuthLoaded();
       const authHeader = req.headers.get("authorization");
       const sdkApiKey = resolveRequestSdkApiKey(authHeader);
       const backend = resolveBackendForRequest(sdkApiKey);
+      log.debug("Selected runtime backend", {
+        backend,
+        credentialKind: storedCredential?.kind,
+        hasSdkKey: Boolean(sdkApiKey),
+        model,
+      });
       reqPerf.mark("backend-resolved");
+
+      if (backend === "cursor-agent" && oauthRequiresCursorAgent(storedCredential) && !isCursorAgentAvailable()) {
+        const message = `cursor-kilo error: ${describeCredentialRequirement(storedCredential)}`;
+        if (!stream) {
+          return new Response(JSON.stringify(createChatCompletionResponse(model, message)), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+        const id = `cursor-kilo-${Date.now()}`;
+        const created = Math.floor(Date.now() / 1000);
+        const errChunk = createChatCompletionChunk(id, created, model, message, true);
+        return new Response(
+          `data: ${JSON.stringify(errChunk)}\n\ndata: [DONE]\n\n`,
+          { status: 200, headers: { "Content-Type": "text/event-stream" } },
+        );
+      }
+
       const resolvedPrompt = resolvePromptForBackend({
         backend,
         messages,
@@ -1932,13 +2052,26 @@ export async function ensureCursorProxyServer(workspaceDirectory: string, toolRo
       const toolLoopGuard = createToolLoopGuard(messages, TOOL_LOOP_MAX_REPEAT);
       const boundaryContext = createBoundaryRuntimeContext("node-handler");
 
-      const model = boundaryContext.run("resolveRuntimeModel", (boundary) =>
-        boundary.resolveRuntimeModel(bodyData?.model, bodyData?.cursorModel),
-      );
+      const model = resolveRequestModel(bodyData as Record<string, unknown>);
+      await ensureStoredAuthLoaded();
       const authHeaderNode = req.headers["authorization"] as string | undefined;
       const sdkApiKeyNode = resolveRequestSdkApiKey(authHeaderNode);
       const backend = resolveBackendForRequest(sdkApiKeyNode);
+      log.debug("Selected runtime backend", {
+        backend,
+        credentialKind: storedCredential?.kind,
+        hasSdkKey: Boolean(sdkApiKeyNode),
+        model,
+      });
       reqPerf.mark("backend-resolved");
+
+      if (backend === "cursor-agent" && oauthRequiresCursorAgent(storedCredential) && !isCursorAgentAvailable()) {
+        const message = `cursor-kilo error: ${describeCredentialRequirement(storedCredential)}`;
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(createChatCompletionResponse(model, message)));
+        return;
+      }
+
       const resolvedPrompt = resolvePromptForBackend({
         backend,
         messages,
@@ -2790,6 +2923,7 @@ export function buildToolHookEntries(registry: CoreRegistry, fallbackBaseDir?: s
  */
 export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, serverUrl }: PluginInput) => {
   const workspaceDirectory = resolveWorkspaceDirectory(worktree, directory);
+  const runtimeModelCatalog = loadRuntimeModelCatalog(workspaceDirectory);
   log.debug("Plugin initializing", {
     directory,
     worktree,
@@ -2821,6 +2955,18 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
     toolLoopMaxRepeat: TOOL_LOOP_MAX_REPEAT,
   });
   await ensurePluginDirectory();
+  await ensureStoredAuthLoaded();
+  if (storedCredential?.kind === "sdk-api-key") {
+    log.info("Loaded Cursor API key credentials", { backendHint: "sdk" });
+  } else if (storedCredential?.kind === "oauth-jwt") {
+    log.info("Loaded Cursor OAuth credentials", {
+      backendHint: isCursorAgentAvailable() ? "cursor-agent" : "cursor-agent-required",
+    });
+  } else if (storedApiKey) {
+    log.info("Loaded Cursor credentials from Kilo auth store", { backendHint: "sdk" });
+  } else {
+    log.warn("No Cursor credentials in Kilo auth store; run `kilo auth login --provider cursor`");
+  }
 
   // Auto-refresh model list from cursor-agent (non-blocking, fire-and-forget)
   autoRefreshModels().catch(() => {});
@@ -2985,7 +3131,7 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
     return toolEntries;
   }
 
-  const proxyBaseURL = await ensureCursorProxyServer(workspaceDirectory, router);
+  const proxyBaseURL = await ensureCursorProxyServer(workspaceDirectory, router, runtimeModelCatalog);
   log.debug("Proxy server started", { baseURL: proxyBaseURL });
 
   // Build tool hook entries from local registry
@@ -2997,34 +3143,15 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
       provider: CURSOR_PROVIDER_ID,
       methods: buildCursorAuthMethods(CURSOR_PROVIDER_ID),
       async loader(getAuth: () => Promise<Auth>) {
-        try {
-          const auth = await getAuth();
-          if (auth?.type === "oauth" && auth.access) {
-            let access = auth.access;
-            if (auth.refresh && isExpiringSoon(auth.access)) {
-              try {
-                const refreshed = await refreshAccessToken(auth.refresh);
-                access = refreshed.accessToken;
-                storedApiKey = refreshed.accessToken;
-              } catch {
-                storedApiKey = auth.access;
-              }
-            } else {
-              storedApiKey = access;
-            }
-            log.debug("Stored OAuth access token from auth loader");
-          } else if (auth?.type === "api" && auth.key) {
-            storedApiKey = auth.key;
-            log.debug("Stored API key from auth loader");
-          }
-        } catch (err) {
-          log.debug("No stored auth available", { error: String(err) });
-        }
+        cachedGetAuth = getAuth;
+        await ensureStoredAuthLoaded();
         return {};
       },
     },
 
     async "chat.params"(input: any, output: any) {
+      await ensureStoredAuthLoaded();
+
       const boundaryContext = createBoundaryRuntimeContext("chat.params");
 
       const providerMatch = boundaryContext.run("matchesProvider", (boundary) =>
@@ -3034,14 +3161,30 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
         return;
       }
 
-      boundaryContext.run("applyChatParamDefaults", (boundary) =>
+      boundaryContext.run("applyChatParamDefaults", (boundary) => {
+        const sdkKey = resolveSdkApiKey({ env: process.env, storedApiKey });
         boundary.applyChatParamDefaults(
           output,
           proxyBaseURL,
           CURSOR_PROXY_DEFAULT_BASE_URL,
-          "cursor-agent",
-        ),
+          sdkKey ?? "cursor-agent",
+        );
+      });
+
+      const wireModel = resolveChatParamsWireModel(
+        runtimeModelCatalog,
+        input.model ?? {},
+        output.options ?? {},
       );
+      if (wireModel) {
+        output.options = output.options ?? {};
+        output.options.cursorModel = wireModel;
+        log.debug("Resolved cursor wire model from variant/reasoning", {
+          configModel: input.model?.modelID,
+          variant: input.model?.variant,
+          wireModel,
+        });
+      }
 
       // Tool definitions handling:
       // - proxy-exec mode: provider injects tool definitions directly.
