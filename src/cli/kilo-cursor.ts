@@ -22,6 +22,7 @@ import {
 import { resolveCursorAgentBinary } from "../utils/binary.js";
 import { getPossibleAuthPaths, isUsableSdkApiKey } from "../auth.js";
 import { parseCursorBackendPreference } from "../provider/backend.js";
+import { parseConfigJson } from "../kilo/platform.js";
 import { isAgentPoolEnabled, parseAgentPoolIdleMs } from "../client/cursor-agent-child.js";
 import { groupCursorModels, mergeCursorModelEntries } from "../models/variants.js";
 import { mergeKiloModelCatalog } from "../models/kilo-catalog.js";
@@ -555,7 +556,11 @@ function readConfig(configPath: string): any {
     throw error;
   }
   try {
-    return JSON.parse(raw);
+    const parsed = parseConfigJson(raw);
+    if (!parsed) {
+      throw new SyntaxError("parseConfigJson returned null");
+    }
+    return parsed;
   } catch (error) {
     throw new Error(`Invalid JSON in config: ${configPath} (${String(error)})`);
   }

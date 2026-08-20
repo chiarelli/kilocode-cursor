@@ -49,12 +49,70 @@ export function resolveProjectKiloConfig(cwd: string): string | null {
   return null;
 }
 
+/** Strip JSONC comments; does not treat // inside quoted strings (e.g. https URLs). */
+export function stripJsoncComments(raw: string): string {
+  let out = "";
+  let i = 0;
+  let inString = false;
+  let escape = false;
+  let stringQuote = "\"";
+
+  while (i < raw.length) {
+    const ch = raw[i]!;
+
+    if (inString) {
+      out += ch;
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === stringQuote) {
+        inString = false;
+      }
+      i++;
+      continue;
+    }
+
+    if (ch === "\"" || ch === "'") {
+      inString = true;
+      stringQuote = ch;
+      out += ch;
+      i++;
+      continue;
+    }
+
+    if (ch === "/" && raw[i + 1] === "/") {
+      while (i < raw.length && raw[i] !== "\n") {
+        i++;
+      }
+      continue;
+    }
+
+    if (ch === "/" && raw[i + 1] === "*") {
+      i += 2;
+      while (i < raw.length && !(raw[i] === "*" && raw[i + 1] === "/")) {
+        i++;
+      }
+      i += 2;
+      continue;
+    }
+
+    out += ch;
+    i++;
+  }
+
+  return out;
+}
+
 export function parseConfigJson(raw: string): Record<string, unknown> | null {
   try {
-    const stripped = raw.replace(/\/\/[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "");
-    return JSON.parse(stripped);
+    return JSON.parse(stripJsoncComments(raw));
   } catch {
-    try { return JSON.parse(raw); } catch { return null; }
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return null;
+    }
   }
 }
 
