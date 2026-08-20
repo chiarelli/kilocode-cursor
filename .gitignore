@@ -1,0 +1,51 @@
+node_modules/
+dist/
+*.log
+.DS_Store
+bun.lock
+# Installer binaries (not source)
+cmd/installer/installer-binary
+opencode-cursor-installer
+/installer
+opencode-cursor-*.log
+
+# OpenCode local config
+.opencode/
+.cursor/
+.claude/
+.sisyphus/
+.worktrees/
+
+# Development documentation
+BUG_ANALYSIS.md
+DEBUG_SEGFAULT.md
+UNINSTALL.md
+UNINSTALL_STEPS.md
+
+# Session logs and plans
+*-cd-*.txt
+docs/plans/
+docs/superpowers/
+
+# PR/agent review handovers (local only — never commit)
+docs/reviews/
+docs/REVIEW_*.md
+
+# Historical/local analysis docs
+docs/ACP_MIGRATION.md
+docs/AUTHHOOK_AUDIT.md
+docs/gap-analysis.md
+docs/tool-reliability-gap-*.md
+
+# Agent configuration (local only)
+AGENTS.md
+TOOL_SMOKE.md
+
+# CodeRabbit config must remain tracked so PR reviews work
+!.coderabbit.yaml
+
+# Local development and debugging
+.env
+.atl/
+estado-fix-sdk.md
+plan-fix-sdk.md

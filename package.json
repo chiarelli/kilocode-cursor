@@ -1,0 +1,81 @@
+{
+  "name": "kilo-cursor-plugin",
+  "version": "1.0.0",
+  "description": "Bridge Kilo Code to Cursor subscription models via cursor-agent. Transparent tool mapping (glob, read, websearch, MCP) between Kilo and cursor-agent.",
+  "type": "module",
+  "main": "dist/plugin-entry.js",
+  "module": "src/plugin-entry.ts",
+  "engines": {
+    "opencode": "^7.0.0"
+  },
+  "scripts": {
+    "build": "bun build ./src/index.ts ./src/plugin-entry.ts ./src/cli/discover.ts ./src/cli/kilo-cursor.ts ./src/cli/mcptool.ts --outdir ./dist --target node --external @kilocode/plugin --external zod",
+    "dev": "bun build ./src/index.ts ./src/plugin-entry.ts ./src/cli/discover.ts ./src/cli/kilo-cursor.ts ./src/cli/mcptool.ts --outdir ./dist --target node --watch --external @kilocode/plugin --external zod",
+    "test": "bun test",
+    "test:unit": "bun test --isolate tests/unit",
+    "discover": "bun run src/cli/discover.ts",
+    "prepublishOnly": "bun run build"
+  },
+  "bin": {
+    "kilo-cursor": "dist/cli/kilo-cursor.js",
+    "cursor-discover": "dist/cli/discover.js",
+    "mcptool": "dist/cli/mcptool.js"
+  },
+  "exports": {
+    ".": {
+      "bun": "./src/plugin-entry.ts",
+      "import": "./dist/plugin-entry.js",
+      "default": "./dist/plugin-entry.js"
+    },
+    "./server": {
+      "bun": "./src/plugin-entry.ts",
+      "import": "./dist/plugin-entry.js",
+      "default": "./dist/plugin-entry.js"
+    },
+    "./lib": {
+      "bun": "./src/index.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "src",
+    "scripts/sdk-runner.mjs",
+    "scripts/cursor-agent-runner.mjs"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "@kilocode/plugin": "^7.4.22",
+    "@kilocode/sdk": "^7.4.22",
+    "ai": "^6.0.55",
+    "strip-ansi": "^7.1.0"
+  },
+  "optionalDependencies": {
+    "@cursor/sdk": "^1.0.18"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0"
+  },
+  "peerDependencies": {
+    "@kilocode/sdk": "^7.0.0",
+    "bun-types": "^1.1.0"
+  },
+  "license": "BSD-3-Clause",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Nomadcxx/opencode-cursor.git"
+  },
+  "keywords": [
+    "kilocode",
+    "kilo",
+    "cursor",
+    "cursor-agent",
+    "ai",
+    "streaming",
+    "plugin",
+    "mcp"
+  ],
+  "author": "Raphael"
+}
