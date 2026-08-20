@@ -51,7 +51,7 @@ export class BridgeJsonStreamDetector {
         : { action: "buffer" };
     }
     if (this.state === "passthrough") {
-      return { action: "passthrough" };
+      return { action: "passthrough", text: delta };
     }
 
     const hadBufferedText = this.buffer.length > 0;
@@ -68,9 +68,7 @@ export class BridgeJsonStreamDetector {
         const withheld = this.buffer;
         this.buffer = "";
         this.state = "passthrough";
-        return hadBufferedText
-          ? { action: "passthrough", text: withheld }
-          : { action: "passthrough" };
+        return { action: "passthrough", text: withheld };
       }
     }
 

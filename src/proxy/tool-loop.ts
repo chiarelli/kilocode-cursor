@@ -1,4 +1,11 @@
 import type { StreamJsonToolCallEvent } from "../streaming/types.js";
+import {
+  isCursorMcpMetaTool,
+  isCursorNativeMcpDiscoveryTool,
+  remapBareMcpToolCall,
+  resolveMcpToolName,
+} from "../mcp/kilo-bridge.js";
+import { namespaceMcpTool } from "../mcp/tool-bridge.js";
 import { createLogger } from "../utils/logger.js";
 
 const log = createLogger("proxy:tool-loop");
@@ -149,12 +156,43 @@ export function extractOpenAiToolCall(
     return { action: "skip", skipReason: "no_name" };
   }
 
-  // Defensive check: if model tries to call "mcp" directly, it's a mistake.
-  // MCP tools must be called with their full names like mcp__server__tool.
+  if (isCursorNativeMcpDiscoveryTool(name)) {
+    const metaResult = extractMcpMetaToolCall(event, allowedToolNames);
+    if (metaResult) {
+      return metaResult;
+    }
+    log.debug("Blocked cursor-agent native MCP discovery tool; use Kilo MCP tool names", { name });
+    return { action: "skip", skipReason: "cursor_native_mcp_blocked" };
+  }
+
+  if (isCursorMcpMetaTool(name)) {
+    const metaResult = extractMcpMetaToolCall(event, allowedToolNames);
+    if (metaResult) {
+      return metaResult;
+    }
+  }
+
+  // SDK/cursor-agent generic MCP wrapper: { providerIdentifier, toolName, args }.
   if (name.toLowerCase() === "mcp") {
-    log.warn("Model attempted to call 'mcp' directly (not a valid tool name)", {
+    const remapped = remapBareMcpToolCall(args, allowedToolNames);
+    if (remapped) {
+      const callId = event.call_id || (event as any).tool_call_id || "call_unknown";
+      return {
+        action: "intercept",
+        toolCall: {
+          id: callId,
+          type: "function",
+          function: {
+            name: remapped.name,
+            arguments: toOpenAiArguments(remapped.args),
+          },
+        },
+      };
+    }
+
+    log.warn("Model attempted to call 'mcp' without resolvable provider/toolName", {
       args,
-      hint: "MCP tools must be called by their full name (e.g. mcp__engram__mem_save), not 'mcp'",
+      hint: "MCP tools must use mcp__<server>__<tool> or a Kilo name like context7_<tool>",
     });
     return {
       action: "passthrough",
@@ -313,6 +351,11 @@ function normalizeToolName(raw: string): string {
 }
 
 function resolveAllowedToolName(name: string, allowedToolNames: Set<string>): string | null {
+  const mcpResolved = resolveMcpToolName(name, allowedToolNames);
+  if (mcpResolved) {
+    return mcpResolved;
+  }
+
   if (allowedToolNames.has(name)) {
     return name;
   }
@@ -369,4 +412,67 @@ function toOpenAiArguments(args: unknown): string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function extractMcpMetaToolCall(
+  event: StreamJsonToolCallEvent,
+  allowedToolNames: Set<string>,
+): ToolCallExtractionResult | null {
+  const entries = Object.entries(event.tool_call || {});
+  if (entries.length === 0) {
+    return null;
+  }
+
+  const [, payload] = entries[0]!;
+  if (!isRecord(payload)) {
+    return null;
+  }
+
+  let inner: Record<string, unknown> = isRecord(payload.args) ? payload.args : payload;
+  if (
+    !("toolName" in inner || "providerIdentifier" in inner || "server" in inner)
+    && isRecord(payload.input)
+  ) {
+    inner = payload.input;
+  }
+
+  const provider = inner.providerIdentifier ?? inner.server;
+  const toolName = inner.toolName ?? inner.name;
+  let resolvedName: string | null = null;
+
+  if (typeof provider === "string" && typeof toolName === "string") {
+    resolvedName = resolveMcpToolName(namespaceMcpTool(provider, toolName), allowedToolNames);
+  } else if (typeof toolName === "string") {
+    resolvedName = resolveMcpToolName(toolName, allowedToolNames);
+    if (resolvedName === null && allowedToolNames.has(toolName)) {
+      resolvedName = toolName;
+    }
+  }
+
+  if (!resolvedName) {
+    return null;
+  }
+
+  let args = inner.arguments ?? inner.args ?? {};
+  if (typeof args === "string") {
+    try {
+      const parsed = JSON.parse(args);
+      args = parsed;
+    } catch {
+      args = { value: args };
+    }
+  }
+
+  const callId = event.call_id || (event as any).tool_call_id || "call_unknown";
+  return {
+    action: "intercept",
+    toolCall: {
+      id: callId,
+      type: "function",
+      function: {
+        name: resolvedName,
+        arguments: toOpenAiArguments(args),
+      },
+    },
+  };
 }

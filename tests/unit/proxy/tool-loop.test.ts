@@ -473,7 +473,20 @@ describe("extractOpenAiToolCall with pass-through", () => {
     expect(result.skipReason).toBe("no_name");
   });
 
-  it("should return passthrough action when model tries to call 'mcp' directly", () => {
+  it("should intercept bare mcp wrapper when provider/toolName resolve to Kilo tool", () => {
+    const event = createToolCallEvent("mcp", {
+      providerIdentifier: "context7",
+      toolName: "search",
+      args: { q: "react" },
+    });
+
+    const result = extractOpenAiToolCall(event, new Set(["context7_search", "mcp__context7__search"]));
+
+    expect(result.action).toBe("intercept");
+    expect(result.toolCall?.function.name).toBe("context7_search");
+  });
+
+  it("should passthrough bare mcp when provider/toolName cannot be resolved", () => {
     const event = createToolCallEvent("mcp", { server: "engram", tool: "mem_save" });
 
     const result = extractOpenAiToolCall(event, new Set(["bash", "mcp__engram__mem_save"]));
@@ -483,13 +496,24 @@ describe("extractOpenAiToolCall with pass-through", () => {
     expect(result.toolCall).toBeUndefined();
   });
 
-  it("should intercept valid MCP tool calls with full namespaced name", () => {
-    const event = createToolCallEvent("mcp__engram__mem_save", { memory: "test" });
+  it("should intercept mcp__ calls and return the Kilo native name", () => {
+    const event = createToolCallEvent("mcp__context7__resolve_library_id", { library: "react" });
 
-    const result = extractOpenAiToolCall(event, new Set(["bash", "mcp__engram__mem_save"]));
+    const result = extractOpenAiToolCall(
+      event,
+      new Set(["context7_resolve-library-id", "mcp__context7__resolve_library_id"]),
+    );
 
     expect(result.action).toBe("intercept");
-    expect(result.toolCall).toBeDefined();
-    expect(result.toolCall!.function.name).toBe("mcp__engram__mem_save");
+    expect(result.toolCall?.function.name).toBe("context7_resolve-library-id");
+  });
+
+  it("should skip GetMcpTools when no Kilo mapping exists", () => {
+    const event = createToolCallEvent("GetMcpTools", {});
+
+    const result = extractOpenAiToolCall(event, new Set(["context7_search"]));
+
+    expect(result.action).toBe("skip");
+    expect(result.skipReason).toBe("cursor_native_mcp_blocked");
   });
 });

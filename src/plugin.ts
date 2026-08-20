@@ -60,8 +60,8 @@ import {
   sanitizeSessionKey,
   RESUME_CHAT_ID_SAFE_RE,
 } from "./proxy/session-resume.js";
+import { buildProxyAllowedToolNames } from "./mcp/kilo-bridge.js";
 import {
-  extractAllowedToolNames,
   type OpenAiToolCall,
 } from "./proxy/tool-loop.js";
 import { OpenCodeToolDiscovery } from "./tools/discovery.js";
@@ -78,6 +78,13 @@ import {
 import type { KiloCatalogResult } from "./models/kilo-catalog.js";
 import { readMcpConfigs } from "./mcp/config.js";
 import { McpClientManager } from "./mcp/client-manager.js";
+import {
+  buildKiloMcpAliasHint,
+  discoverKiloNativeMcpToolDefs,
+  enrichKiloToolsWithMcpAliases,
+  mergeToolDefinitionsByName,
+} from "./mcp/kilo-bridge.js";
+import { syncKiloPassthroughBridgeCliConfig } from "./kilo/cursor-cli-bridge.js";
 import {
   MCP_TOOL_PREFIX,
   buildMcpToolHookEntries,
@@ -145,6 +152,11 @@ export function buildAvailableToolsSystemMessage(
     const names = lastToolNames.join(", ");
     const mapping = lastToolMap.map((m) => `${m.id} -> ${m.name}`).join("; ");
     parts.push(`Available Kilo tools (use via tool calls): ${names}. Original skill ids mapped as: ${mapping}. Aliases include oc_skill_* and oc_superskill_* when applicable.`);
+  }
+
+  const kiloMcpHint = buildKiloMcpAliasHint(lastToolNames);
+  if (kiloMcpHint) {
+    parts.push(kiloMcpHint);
   }
 
   if (mcpToolSummaries && mcpToolSummaries.length > 0) {
@@ -579,6 +591,34 @@ function createAssistantThinkingEvent(
       content: event.message.content.filter((content) => content.type === "thinking"),
     },
   };
+}
+
+function handleBridgeJsonAssistantEvent(
+  bridgeDetector: BridgeJsonStreamDetector | null,
+  event: StreamJsonEvent,
+  emitBridgeText: (text: string) => void,
+  emitToolCallAndTerminate: (toolCall: OpenAiToolCall) => void,
+): boolean {
+  if (!bridgeDetector || !isAssistantText(event)) {
+    return false;
+  }
+
+  const decision = bridgeDetector.push(event);
+  if (decision.action === "tool_call") {
+    emitToolCallAndTerminate(decision.toolCall);
+    return true;
+  }
+  if (decision.action === "buffer") {
+    return true;
+  }
+  if (decision.text) {
+    emitBridgeText(decision.text);
+    return true;
+  }
+  if (decision.action === "passthrough") {
+    return true;
+  }
+  return false;
 }
 
 function shouldTreatCursorAgentFailureAsDiagnostic(
@@ -1381,7 +1421,7 @@ export async function ensureCursorProxyServer(
         hasToolResultMessages: messages.some((m: any) => m?.role === "tool"),
       });
 
-      const allowedToolNames = extractAllowedToolNames(tools);
+      const allowedToolNames = buildProxyAllowedToolNames(tools);
       const bridgeJsonEnabled = isBridgeJsonEnabled();
       const toolSchemaMap = buildToolSchemaMap(tools);
       const toolLoopGuard = createToolLoopGuard(messages, TOOL_LOOP_MAX_REPEAT);
@@ -1666,27 +1706,13 @@ export async function ensureCursorProxyServer(
                 emitBridgeText(text);
               }
             };
-            const handleBridgeAssistantEvent = (event: StreamJsonEvent): boolean => {
-              if (!bridgeDetector || !isAssistantText(event)) {
-                return false;
-              }
-              if (isThinking(event)) {
-                emitBridgeEvent(createAssistantThinkingEvent(event));
-              }
-              const decision = bridgeDetector.push(event);
-              if (decision.action === "tool_call") {
-                emitToolCallAndTerminate(decision.toolCall);
-                return true;
-              }
-              if (decision.action === "buffer") {
-                return true;
-              }
-              if (decision.text !== undefined) {
-                emitBridgeText(decision.text);
-                return true;
-              }
-              return false;
-            };
+            const handleBridgeAssistantEvent = (event: StreamJsonEvent): boolean =>
+              handleBridgeJsonAssistantEvent(
+                bridgeDetector,
+                event,
+                emitBridgeText,
+                emitToolCallAndTerminate,
+              );
             const emitTerminalAssistantErrorAndTerminate = (message: string) => {
               if (streamTerminated) {
                 return;
@@ -2046,7 +2072,7 @@ export async function ensureCursorProxyServer(
       const messages: Array<any> = Array.isArray(bodyData?.messages) ? bodyData.messages : [];
       const stream = bodyData?.stream === true;
       const tools = Array.isArray(bodyData?.tools) ? bodyData.tools : [];
-      const allowedToolNames = extractAllowedToolNames(tools);
+      const allowedToolNames = buildProxyAllowedToolNames(tools);
       const bridgeJsonEnabled = isBridgeJsonEnabled();
       const toolSchemaMap = buildToolSchemaMap(tools);
       const toolLoopGuard = createToolLoopGuard(messages, TOOL_LOOP_MAX_REPEAT);
@@ -2367,27 +2393,13 @@ export async function ensureCursorProxyServer(
             emitBridgeText(text);
           }
         };
-        const handleBridgeAssistantEvent = (event: StreamJsonEvent): boolean => {
-          if (!bridgeDetector || !isAssistantText(event)) {
-            return false;
-          }
-          if (isThinking(event)) {
-            emitBridgeEvent(createAssistantThinkingEvent(event));
-          }
-          const decision = bridgeDetector.push(event);
-          if (decision.action === "tool_call") {
-            emitToolCallAndTerminate(decision.toolCall);
-            return true;
-          }
-          if (decision.action === "buffer") {
-            return true;
-          }
-          if (decision.text !== undefined) {
-            emitBridgeText(decision.text);
-            return true;
-          }
-          return false;
-        };
+        const handleBridgeAssistantEvent = (event: StreamJsonEvent): boolean =>
+          handleBridgeJsonAssistantEvent(
+            bridgeDetector,
+            event,
+            emitBridgeText,
+            emitToolCallAndTerminate,
+          );
 
         const chunkQueue: Buffer[] = [];
         let draining = false;
@@ -2971,15 +2983,19 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
   // Auto-refresh model list from cursor-agent (non-blocking, fire-and-forget)
   autoRefreshModels().catch(() => {});
 
-  // MCP tool bridge: connect to MCP servers and register their tools.
-  // We await init so tools are available before the plugin returns its tool hook.
+  // Optional direct MCP bridge (stdio from kilo.jsonc). Default OFF — Kilo owns MCP tools.
   const mcpManager = new McpClientManager();
   let mcpToolEntries: Record<string, any> = {};
   let mcpToolDefs: any[] = [];
   let mcpToolSummaries: McpToolSummary[] = [];
-  const mcpEnabled = process.env.CURSOR_KILO_MCP_BRIDGE !== "false"; // default ON
+  const directMcpEnabled = process.env.CURSOR_KILO_DIRECT_MCP === "true"
+    || process.env.CURSOR_KILO_MCP_BRIDGE === "true";
 
-  if (mcpEnabled) {
+  if (!directMcpEnabled) {
+    syncKiloPassthroughBridgeCliConfig(workspaceDirectory);
+  }
+
+  if (directMcpEnabled) {
     try {
       const configs = readMcpConfigs();
       if (configs.length === 0) {
@@ -3059,6 +3075,20 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
     : null;
   let lastToolNames: string[] = [];
   let lastToolMap: Array<{ id: string; name: string }> = [];
+
+  async function finalizeChatParamTools(tools: unknown): Promise<any[]> {
+    let next: any[] = Array.isArray(tools) ? applyCursorWriteToolContract(tools as any[]) : [];
+    try {
+      const nativeMcp = await discoverKiloNativeMcpToolDefs(client);
+      if (nativeMcp.length > 0) {
+        next = mergeToolDefinitionsByName(next, nativeMcp);
+        log.debug("Merged Kilo native MCP tools into chat.params", { count: nativeMcp.length });
+      }
+    } catch (err) {
+      log.debug("Kilo native MCP discovery skipped", { error: String(err) });
+    }
+    return enrichKiloToolsWithMcpAliases(next);
+  }
 
   async function refreshTools() {
     toolsByName.clear();
@@ -3201,32 +3231,33 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
           );
 
           if (resolved.action === "override" || resolved.action === "fallback") {
-            output.options.tools = applyCursorWriteToolContract(resolved.tools);
+            output.options.tools = await finalizeChatParamTools(resolved.tools);
           } else if (resolved.action === "preserve") {
             const count = Array.isArray(existingTools) ? existingTools.length : 0;
-            output.options.tools = applyCursorWriteToolContract(existingTools);
-            log.debug("Using OpenCode-provided tools from chat.params", { count });
+            output.options.tools = await finalizeChatParamTools(existingTools);
+            log.debug("Using Kilo-provided tools from chat.params", { count });
+          }
+
+          if (Array.isArray(output.options.tools)) {
+            lastToolNames = output.options.tools
+              .map((t: any) => t?.function?.name)
+              .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
           }
         } catch (err) {
           log.debug("Failed to refresh tools", { error: String(err) });
         }
       }
 
-      // Append MCP bridge tool definitions so the model can call them
+      // Optional direct MCP defs (CURSOR_KILO_DIRECT_MCP=true only)
       if (mcpToolDefs.length > 0) {
         const beforeTools = Array.isArray(output.options.tools) ? output.options.tools : [];
-        if (Array.isArray(output.options.tools)) {
-          output.options.tools = [...output.options.tools, ...mcpToolDefs];
-        } else {
-          output.options.tools = mcpToolDefs;
-        }
-        const afterTools = Array.isArray(output.options.tools) ? output.options.tools : [];
-        log.debug("Injected MCP tool definitions into chat.params", {
+        output.options.tools = Array.isArray(output.options.tools)
+          ? [...output.options.tools, ...mcpToolDefs]
+          : mcpToolDefs;
+        log.debug("Appended direct MCP tool definitions", {
           injectedCount: mcpToolDefs.length,
           beforeCount: beforeTools.length,
-          afterCount: afterTools.length,
-          mcpNames: mcpToolDefs.slice(0, 10).map((t: any) => t?.function?.name ?? t?.name ?? "unknown"),
-          tailNames: afterTools.slice(-10).map((t: any) => t?.function?.name ?? t?.name ?? "unknown"),
+          afterCount: Array.isArray(output.options.tools) ? output.options.tools.length : 0,
         });
       }
     },
