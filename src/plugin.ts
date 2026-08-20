@@ -84,7 +84,7 @@ import {
   enrichKiloToolsWithMcpAliases,
   mergeToolDefinitionsByName,
 } from "./mcp/kilo-bridge.js";
-import { syncKiloPassthroughBridgeCliConfig } from "./kilo/cursor-cli-bridge.js";
+import { isDirectMcpEnabled, removePassthroughBridgeCliConfig, syncKiloPassthroughBridgeCliConfig } from "./kilo/cursor-cli-bridge.js";
 import {
   MCP_TOOL_PREFIX,
   buildMcpToolHookEntries,
@@ -2983,16 +2983,17 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
   // Auto-refresh model list from cursor-agent (non-blocking, fire-and-forget)
   autoRefreshModels().catch(() => {});
 
-  // Optional direct MCP bridge (stdio from kilo.jsonc). Default OFF — Kilo owns MCP tools.
+  // Direct MCP bridge (stdio from kilo.jsonc). Default ON; CURSOR_KILO_DIRECT_MCP=false to disable.
   const mcpManager = new McpClientManager();
   let mcpToolEntries: Record<string, any> = {};
   let mcpToolDefs: any[] = [];
   let mcpToolSummaries: McpToolSummary[] = [];
-  const directMcpEnabled = process.env.CURSOR_KILO_DIRECT_MCP === "true"
-    || process.env.CURSOR_KILO_MCP_BRIDGE === "true";
+  const directMcpEnabled = isDirectMcpEnabled();
 
   if (!directMcpEnabled) {
     syncKiloPassthroughBridgeCliConfig(workspaceDirectory);
+  } else {
+    removePassthroughBridgeCliConfig(workspaceDirectory);
   }
 
   if (directMcpEnabled) {
@@ -3248,7 +3249,7 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
         }
       }
 
-      // Optional direct MCP defs (CURSOR_KILO_DIRECT_MCP=true only)
+      // Direct MCP defs when enabled (default ON)
       if (mcpToolDefs.length > 0) {
         const beforeTools = Array.isArray(output.options.tools) ? output.options.tools : [];
         output.options.tools = Array.isArray(output.options.tools)

@@ -21,6 +21,7 @@ import {
   setStoredApiKey,
 } from "./plugin.js";
 import { readMcpConfigs } from "./mcp/config.js";
+import { isDirectMcpEnabled } from "./kilo/cursor-cli-bridge.js";
 import { McpClientManager } from "./mcp/client-manager.js";
 import {
   buildMcpToolHookEntries,
@@ -154,7 +155,7 @@ export function createV2Setup() {
     let mcpToolEntries: Record<string, any> = {};
     let mcpToolDefs: any[] = [];
     let mcpToolSummaries: Array<{ serverName: string; toolName: string; callName?: string; description?: string; params?: string[] }> = [];
-    const mcpEnabled = process.env.CURSOR_KILO_MCP_BRIDGE !== "false";
+    const mcpEnabled = isDirectMcpEnabled();
 
     if (mcpEnabled) {
       try {
