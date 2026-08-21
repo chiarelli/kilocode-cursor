@@ -7,6 +7,8 @@ const MODEL_DISCOVERY_TIMEOUT_MS = 5000;
 export type DiscoveredModel = {
   id: string;
   name: string;
+  /** Context window in tokens when known (from Cursor API or display-name hint). */
+  contextLimit?: number;
 };
 
 export function parseCursorModelsOutput(output: string): DiscoveredModel[] {

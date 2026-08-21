@@ -9,18 +9,19 @@ import {
 describe("kilo-catalog", () => {
   it("groups flat effort variants into cursor/ entries with reasoning variants", () => {
     const discovered = [
-      { id: "claude-fable-5", name: "Claude Fable 5" },
-      { id: "claude-fable-5-low", name: "Claude Fable 5 Low" },
-      { id: "claude-fable-5-medium", name: "Claude Fable 5 Medium" },
-      { id: "claude-fable-5-high", name: "Claude Fable 5 High" },
-      { id: "claude-fable-5-max", name: "Claude Fable 5 Max" },
-      { id: "claude-fable-5-thinking-low", name: "Claude Fable 5 Thinking Low" },
-      { id: "claude-fable-5-thinking-high", name: "Claude Fable 5 Thinking High" },
+      { id: "claude-fable-5", name: "Claude Fable 5", contextLimit: 200000 },
+      { id: "claude-fable-5-low", name: "Claude Fable 5 Low", contextLimit: 200000 },
+      { id: "claude-fable-5-medium", name: "Claude Fable 5 Medium", contextLimit: 200000 },
+      { id: "claude-fable-5-high", name: "Claude Fable 5 High", contextLimit: 200000 },
+      { id: "claude-fable-5-max", name: "Claude Fable 5 Max", contextLimit: 1000000 },
+      { id: "claude-fable-5-thinking-low", name: "Claude Fable 5 Thinking Low", contextLimit: 200000 },
+      { id: "claude-fable-5-thinking-high", name: "Claude Fable 5 Thinking High", contextLimit: 200000 },
     ];
 
     const { models } = buildKiloModelCatalog(discovered);
 
     expect(models["claude-fable-5"]).toBeDefined();
+    expect(models["claude-fable-5"]?.limit).toEqual({ context: 1000000, output: 65536 });
     expect(models["claude-fable-5"]?.variants?.low).toEqual({
       reasoning: { effort: "low" },
       options: { cursorModel: "claude-fable-5-low" },

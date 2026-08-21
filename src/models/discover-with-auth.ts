@@ -9,7 +9,8 @@ import {
   type CursorCredential,
 } from "../kilo/credential.js";
 import { syncOAuthToCursorCliConfig } from "../kilo/cursor-cli-config.js";
-import { fetchAvailableModelsFlat } from "./cursor-api-discovery.js";
+import { fetchAvailableModelsFlat, fetchContextLimitIndex } from "./cursor-api-discovery.js";
+import { enrichModelsWithContextLimits } from "./context-limits.js";
 
 export type DiscoverModelsResult = {
   models: DiscoveredModel[];
@@ -62,6 +63,26 @@ async function trySdk(apiKey: string, warnings: string[]): Promise<DiscoveredMod
   return undefined;
 }
 
+async function enrichDiscoveredContextLimits(
+  models: DiscoveredModel[],
+  credential: CursorCredential | undefined,
+  warnings: string[],
+): Promise<DiscoveredModel[]> {
+  const oauthToken = credential?.kind === "oauth-jwt" ? credential.accessToken : undefined;
+  let limits = new Map<string, number>();
+
+  if (oauthToken) {
+    try {
+      limits = await fetchContextLimitIndex(oauthToken);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      warnings.push(`Cursor context limits unavailable (${message})`);
+    }
+  }
+
+  return enrichModelsWithContextLimits(models, limits);
+}
+
 /** Discover models using Kilo auth store, cursor-agent, Cursor API, or SDK. */
 export async function discoverModelsAuthenticated(): Promise<DiscoverModelsResult> {
   const warnings: string[] = [];
@@ -71,7 +92,8 @@ export async function discoverModelsAuthenticated(): Promise<DiscoverModelsResul
 
   const fromAgent = await tryCursorAgent(credential, warnings);
   if (fromAgent) {
-    return { models: fromAgent, source: "cursor-agent", warnings };
+    const models = await enrichDiscoveredContextLimits(fromAgent, credential, warnings);
+    return { models, source: "cursor-agent", warnings };
   }
 
   const oauthToken = credential?.kind === "oauth-jwt" ? credential.accessToken : undefined;
@@ -85,7 +107,8 @@ export async function discoverModelsAuthenticated(): Promise<DiscoverModelsResul
   if (sdkKey && looksLikeSdkKey(sdkKey)) {
     const fromSdk = await trySdk(sdkKey, warnings);
     if (fromSdk) {
-      return { models: fromSdk, source: "sdk", warnings };
+      const models = enrichModelsWithContextLimits(fromSdk);
+      return { models, source: "sdk", warnings };
     }
   }
 

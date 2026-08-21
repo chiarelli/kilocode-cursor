@@ -11,6 +11,7 @@
  */
 import { getCursorModelCost, type OpenCodeModelCost } from "./pricing.js";
 import type { DiscoveredCursorModel } from "../cli/model-discovery.js";
+import { maxContextLimitForWireIds, buildModelLimit } from "./context-limits.js";
 
 export const KILO_MODEL_PREFIX = "";
 
@@ -140,6 +141,7 @@ function inferCapabilities(family: string, thinking: boolean): Partial<KiloModel
 
 export function buildKiloModelCatalog(discovered: DiscoveredCursorModel[]): KiloCatalogResult {
   const groups = new Map<string, { thinking: boolean; members: ParsedModel[] }>();
+  const discoveredById = new Map(discovered.map((model) => [model.id, model]));
 
   for (const model of discovered) {
     if (model.id === "auto") {
@@ -178,6 +180,14 @@ export function buildKiloModelCatalog(discovered: DiscoveredCursorModel[]): Kilo
 
     const defaultCost = getCursorModelCost(defaultMember.wireId);
     if (defaultCost) entry.cost = defaultCost;
+
+    const contextLimit = maxContextLimitForWireIds(
+      group.members.map((member) => member.wireId),
+      discoveredById,
+    );
+    if (contextLimit !== undefined) {
+      entry.limit = buildModelLimit(contextLimit);
+    }
 
     entry.options = { cursorModel: defaultMember.wireId };
     registerWire(ck, null, defaultMember.wireId);
@@ -329,7 +339,23 @@ function mergePreservingUserFields(existing: unknown, generated: KiloModelEntry)
   const merged: KiloModelEntry = { ...generated, ...e } as KiloModelEntry;
   if (e.cost !== undefined) merged.cost = e.cost as OpenCodeModelCost;
   if (e.name !== undefined) merged.name = String(e.name);
+  if (generated.limit?.context !== undefined) {
+    const existingLimit = e.limit && typeof e.limit === "object" && !Array.isArray(e.limit)
+      ? e.limit as Record<string, unknown>
+      : {};
+    merged.limit = {
+      context: readLimitNumber(existingLimit.context) ?? generated.limit.context,
+      output: readLimitNumber(existingLimit.output) ?? generated.limit.output,
+    };
+  }
   return merged;
+}
+
+function readLimitNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) {
+    return Math.round(value);
+  }
+  return undefined;
 }
 
 /** Normalize Kilo model ids that may include duplicate provider prefixes. */
