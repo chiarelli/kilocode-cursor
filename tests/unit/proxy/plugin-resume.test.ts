@@ -92,6 +92,30 @@ describe("plugin resume orchestration", () => {
     expect(followUp.usedIncremental).toBe(true);
   });
 
+  it("resolvePromptForBackend: forceFreshCursorSession skips cached resume", () => {
+    process.env.CURSOR_KILO_SESSION_RESUME = "1";
+    const { sessionKey, contentPrefix } = resolvePromptForBackend(baseInput);
+    captureResumeChatIdFromEvent(
+      { type: "system", session_id: "chat-abc" } as any,
+      sessionKey,
+      "gpt-5",
+      "/workspace",
+      contentPrefix,
+    );
+    const followUp = resolvePromptForBackend({
+      ...baseInput,
+      messages: [
+        { role: "user", content: "Remember BETA" },
+        { role: "assistant", content: "Got it." },
+        { role: "user", content: "What was the codeword?" },
+      ],
+      forceFreshCursorSession: true,
+    });
+    expect(followUp.resumeChatId).toBeUndefined();
+    expect(followUp.usedIncremental).toBe(false);
+    expect(followUp.prompt).toContain("Remember BETA");
+  });
+
   it("resolvePromptForBackend: resumed tool continuation includes matching tool call context", () => {
     process.env.CURSOR_KILO_SESSION_RESUME = "1";
     const firstTurn = {

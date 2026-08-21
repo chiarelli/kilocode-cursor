@@ -61,6 +61,14 @@ import {
   sanitizeSessionKey,
   RESUME_CHAT_ID_SAFE_RE,
 } from "./proxy/session-resume.js";
+import {
+  clearResumeForKiloSession,
+  consumeCompactionInvalidation,
+  readKiloSessionIdFromHeaders,
+  reaffirmKiloSessionMapping,
+  registerKiloSessionKey,
+  trackKiloSession,
+} from "./proxy/kilo-session-registry.js";
 import { buildProxyAllowedToolNames } from "./mcp/kilo-bridge.js";
 import {
   type OpenAiToolCall,
@@ -419,6 +427,8 @@ export function resolvePromptForBackend(input: {
   tools: Array<any>;
   model: string;
   workspaceDirectory: string;
+  /** Skip cached --resume after Kilo compaction reset for this turn. */
+  forceFreshCursorSession?: boolean;
 }): ResolvedPrompt {
   let fullPrompt: string | undefined;
   const getFullPrompt = () =>
@@ -443,6 +453,12 @@ export function resolvePromptForBackend(input: {
   const sessionKey = buildSessionKey(input.workspaceDirectory, input.model, anchor);
   const sessionKeyHash = sanitizeSessionKey(sessionKey);
   const toolFingerprint = buildToolFingerprint(input.tools);
+  if (input.forceFreshCursorSession) {
+    clearResumeChatId(sessionKey);
+    log.info("Skipping cursor resume after Kilo compaction invalidation", {
+      sessionKeyHash,
+    });
+  }
   const resumeChatId = getResumeChatId(sessionKey, contentPrefix, toolFingerprint);
   const resumeChatIdHash = resumeChatId ? sanitizeSessionKey(resumeChatId) : undefined;
   if (!resumeChatId) {
@@ -1458,6 +1474,8 @@ export async function ensureCursorProxyServer(
       });
       reqPerf.mark("backend-resolved");
 
+      const kiloSessionId = readKiloSessionIdFromHeaders(req.headers);
+
       if (backend === "cursor-agent" && oauthRequiresCursorAgent(storedCredential) && !isCursorAgentAvailable()) {
         const message = `cursor-kilo error: ${describeCredentialRequirement(storedCredential)}`;
         if (!stream) {
@@ -1481,7 +1499,13 @@ export async function ensureCursorProxyServer(
         tools,
         model,
         workspaceDirectory,
+        forceFreshCursorSession: kiloSessionId
+          ? consumeCompactionInvalidation(kiloSessionId)
+          : false,
       });
+      if (kiloSessionId && resolvedPrompt.sessionKey) {
+        registerKiloSessionKey(kiloSessionId, resolvedPrompt.sessionKey);
+      }
       const prompt = applyBridgeJsonPrompt(resolvedPrompt.prompt, { allowedToolNames });
       const {
         resumeChatId,
@@ -2192,6 +2216,8 @@ export async function ensureCursorProxyServer(
       });
       reqPerf.mark("backend-resolved");
 
+      const kiloSessionId = readKiloSessionIdFromHeaders(req.headers);
+
       if (backend === "cursor-agent" && oauthRequiresCursorAgent(storedCredential) && !isCursorAgentAvailable()) {
         const message = `cursor-kilo error: ${describeCredentialRequirement(storedCredential)}`;
         res.writeHead(200, { "Content-Type": "application/json" });
@@ -2205,7 +2231,13 @@ export async function ensureCursorProxyServer(
         tools,
         model,
         workspaceDirectory,
+        forceFreshCursorSession: kiloSessionId
+          ? consumeCompactionInvalidation(kiloSessionId)
+          : false,
       });
+      if (kiloSessionId && resolvedPrompt.sessionKey) {
+        registerKiloSessionKey(kiloSessionId, resolvedPrompt.sessionKey);
+      }
       const prompt = applyBridgeJsonPrompt(resolvedPrompt.prompt, { allowedToolNames });
       const {
         resumeChatId,
@@ -3382,6 +3414,11 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
         });
       }
 
+      if (typeof input.sessionID === "string" && input.sessionID) {
+        trackKiloSession(input.sessionID);
+        reaffirmKiloSessionMapping(input.sessionID);
+      }
+
       // Tool definitions handling:
       // - proxy-exec mode: provider injects tool definitions directly.
       // - opencode mode: preserve OpenCode-provided tools, fallback only when absent.
@@ -3426,6 +3463,35 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
           afterCount: Array.isArray(output.options.tools) ? output.options.tools.length : 0,
         });
       }
+    },
+
+    async "chat.headers"(input: any, output: { headers: Record<string, string> }) {
+      const boundaryContext = createBoundaryRuntimeContext("chat.headers");
+      const providerMatch = boundaryContext.run("matchesProvider", (boundary) =>
+        boundary.matchesProvider(input.model),
+      );
+      if (!providerMatch || typeof input.sessionID !== "string" || !input.sessionID) {
+        return;
+      }
+      output.headers = output.headers ?? {};
+      output.headers["X-Kilo-Session-ID"] = input.sessionID;
+    },
+
+    async "experimental.compaction.autocontinue"(input: any) {
+      if (!isSessionResumeEnabled()) {
+        return;
+      }
+      const boundaryContext = createBoundaryRuntimeContext("experimental.compaction.autocontinue");
+      const providerMatch = boundaryContext.run("matchesProvider", (boundary) =>
+        boundary.matchesProvider(input.model),
+      );
+      if (!providerMatch || typeof input.sessionID !== "string" || !input.sessionID) {
+        return;
+      }
+      clearResumeForKiloSession(input.sessionID);
+      log.info("Reset cursor resume after Kilo compaction", {
+        sessionIdHash: hashForLog(input.sessionID),
+      });
     },
 
     async "experimental.chat.system.transform"(input: any, output: { system: string[] }) {
