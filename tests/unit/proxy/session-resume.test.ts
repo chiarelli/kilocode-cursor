@@ -17,8 +17,8 @@ describe("session-resume", () => {
     delete process.env.CURSOR_KILO_SESSION_RESUME;
   });
 
-  it("is disabled by default", () => {
-    expect(isSessionResumeEnabled()).toBe(false);
+  it("is enabled by default", () => {
+    expect(isSessionResumeEnabled()).toBe(true);
   });
 
   it.each([
@@ -29,8 +29,11 @@ describe("session-resume", () => {
     ["yes", true],
     ["0", false],
     ["false", false],
-    ["", false],
-    [undefined, false],
+    ["off", false],
+    ["no", false],
+    ["disabled", false],
+    ["", true],
+    [undefined, true],
   ])("isSessionResumeEnabled(%p) === %p", (value, expected) => {
     if (value !== undefined) {
       process.env.CURSOR_KILO_SESSION_RESUME = value;

@@ -232,6 +232,7 @@ describe("plugin resume orchestration", () => {
   });
 
   it("captureResumeChatIdFromEvent no-ops when disabled or no sessionKey", () => {
+    process.env.CURSOR_KILO_SESSION_RESUME = "false";
     const key = "/workspace\0gpt-5\0anchor";
     captureResumeChatIdFromEvent(
       { type: "system", session_id: "chat-123" } as any,

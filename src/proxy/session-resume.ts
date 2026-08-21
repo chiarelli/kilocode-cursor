@@ -154,9 +154,20 @@ export function buildSessionKey(workspace: string, model: string, anchor: string
   return `${workspace}\0${model}\0${anchor}`;
 }
 
-/** Return whether `CURSOR_KILO_SESSION_RESUME` is enabled (1/true/on/yes). */
+const SESSION_RESUME_FALSE_VALUES = new Set(["0", "false", "off", "no", "disabled"]);
+
+/**
+ * Return whether session resume is enabled.
+ * Enabled by default; set `CURSOR_KILO_SESSION_RESUME=false` (or `0`/`off`/`no`) to disable.
+ */
 export function isSessionResumeEnabled(): boolean {
-  const value = process.env.CURSOR_KILO_SESSION_RESUME?.toLowerCase();
+  const value = process.env.CURSOR_KILO_SESSION_RESUME?.trim().toLowerCase();
+  if (value === undefined || value === "") {
+    return true;
+  }
+  if (SESSION_RESUME_FALSE_VALUES.has(value)) {
+    return false;
+  }
   return value === "1" || value === "true" || value === "on" || value === "yes";
 }
 
