@@ -57,8 +57,12 @@ export class OpenCodeToolDiscovery {
     if (tools.length === 0 && this.executorPref !== "sdk") {
       try {
         const { spawnSync } = await import("node:child_process");
+        const { resolveToolExecMaxBuffer } = await import("./exec-utils.js");
         const cliCmd = resolveKiloCliCommand();
-        const res = spawnSync(cliCmd[0], cliCmd.slice(1), { encoding: "utf-8" });
+        const res = spawnSync(cliCmd[0], cliCmd.slice(1), {
+          encoding: "utf-8",
+          maxBuffer: resolveToolExecMaxBuffer(),
+        });
         const parsed = this.parseCliJson(res.stdout || "");
         if (parsed?.data?.tools?.length) {
           tools = parsed.data.tools.map((t: any) => this.normalize(t, "cli"));
