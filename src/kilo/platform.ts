@@ -104,9 +104,60 @@ export function stripJsoncComments(raw: string): string {
   return out;
 }
 
+/** Remove trailing commas before `}` or `]` outside quoted strings. */
+export function stripJsoncTrailingCommas(raw: string): string {
+  let out = "";
+  let i = 0;
+  let inString = false;
+  let escape = false;
+  let stringQuote = "\"";
+
+  while (i < raw.length) {
+    const ch = raw[i]!;
+
+    if (inString) {
+      out += ch;
+      if (escape) {
+        escape = false;
+      } else if (ch === "\\") {
+        escape = true;
+      } else if (ch === stringQuote) {
+        inString = false;
+      }
+      i++;
+      continue;
+    }
+
+    if (ch === "\"" || ch === "'") {
+      inString = true;
+      stringQuote = ch;
+      out += ch;
+      i++;
+      continue;
+    }
+
+    if (ch === ",") {
+      let j = i + 1;
+      while (j < raw.length && /\s/.test(raw[j]!)) {
+        j++;
+      }
+      if (raw[j] === "}" || raw[j] === "]") {
+        i++;
+        continue;
+      }
+    }
+
+    out += ch;
+    i++;
+  }
+
+  return out;
+}
+
 export function parseConfigJson(raw: string): Record<string, unknown> | null {
+  const normalized = stripJsoncTrailingCommas(stripJsoncComments(raw));
   try {
-    return JSON.parse(stripJsoncComments(raw));
+    return JSON.parse(normalized);
   } catch {
     try {
       return JSON.parse(raw);

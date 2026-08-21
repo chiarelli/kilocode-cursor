@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { parseConfigJson, stripJsoncComments } from "../../../src/kilo/platform.js";
+import { parseConfigJson, stripJsoncComments, stripJsoncTrailingCommas } from "../../../src/kilo/platform.js";
 
 describe("kilo/platform parseConfigJson", () => {
   it("preserves https:// URLs when stripping line comments", () => {
@@ -25,5 +25,21 @@ describe("kilo/platform parseConfigJson", () => {
   "enabled": true
 }`;
     expect(parseConfigJson(raw)?.enabled).toBe(true);
+  });
+
+  it("allows trailing commas in arrays and objects", () => {
+    const raw = `{
+  "plugin": [
+    "./plugin/kilo-with-cursor-plugin",
+  ],
+  "provider": {
+    "cursor": {
+      "models": {},
+    },
+  },
+}`;
+    const parsed = parseConfigJson(raw);
+    expect(parsed?.plugin).toEqual(["./plugin/kilo-with-cursor-plugin"]);
+    expect(stripJsoncTrailingCommas(raw)).not.toContain(",\n  ]");
   });
 });
