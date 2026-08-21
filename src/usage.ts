@@ -1,3 +1,4 @@
+import { formatSseDone } from "./streaming/openai-sse.js";
 import type { StreamJsonResultEvent } from "./streaming/types.js";
 
 export type CursorUsageMetrics = {
@@ -109,4 +110,30 @@ export function createChatCompletionUsageChunk(
     choices: [],
     usage,
   };
+}
+
+/** Attach OpenAI usage to a non-streaming chat completion payload. */
+export function appendOpenAiUsage<T extends Record<string, unknown>>(
+  payload: T,
+  usage?: OpenAiUsage,
+): T {
+  if (!usage) return payload;
+  return { ...payload, usage };
+}
+
+/** Final SSE payloads: optional usage chunk, then [DONE]. */
+export function formatStreamUsageAndDoneSse(
+  id: string,
+  created: number,
+  model: string,
+  usage?: OpenAiUsage,
+): string[] {
+  const payloads: string[] = [];
+  if (usage) {
+    payloads.push(
+      `data: ${JSON.stringify(createChatCompletionUsageChunk(id, created, model, usage))}\n\n`,
+    );
+  }
+  payloads.push(formatSseDone());
+  return payloads;
 }

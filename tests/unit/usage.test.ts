@@ -1,7 +1,9 @@
 import {
+  appendOpenAiUsage,
   createChatCompletionUsageChunk,
   createOpenAiUsage,
   extractOpenAiUsageFromResult,
+  formatStreamUsageAndDoneSse,
   normalizeCursorUsage,
   type OpenAiUsage,
 } from "../../src/usage.js";
@@ -112,6 +114,35 @@ describe("usage metrics", () => {
       },
     });
     expect(usage.cost).toBe(0.0042);
+  });
+
+  it("appends usage to non-streaming completion payloads", () => {
+    const usage = createOpenAiUsage({
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+    expect(appendOpenAiUsage({ id: "x", choices: [] }, usage)).toEqual({
+      id: "x",
+      choices: [],
+      usage,
+    });
+  });
+
+  it("formats streaming usage before [DONE]", () => {
+    const usage = createOpenAiUsage({
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+    const payloads = formatStreamUsageAndDoneSse("chatcmpl-test", 123, "auto", usage);
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0]).toContain("\"prompt_tokens\":10");
+    expect(payloads[1]).toBe("data: [DONE]\n\n");
   });
 
   it("creates OpenAI streaming usage chunks", () => {

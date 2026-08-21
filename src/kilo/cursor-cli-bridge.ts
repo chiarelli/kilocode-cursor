@@ -29,11 +29,17 @@ export function isDirectMcpEnabled(env: NodeJS.ProcessEnv = process.env): boolea
  * Do not set approvalMode: "allowlist" without permissions.allow (schema error).
  * See https://cursor.com/docs/cli/reference/configuration
  */
+/** Project-level cli.json only supports `permissions` (no top-level `version`). */
 export const KILO_PASSTHROUGH_BRIDGE_CLI_CONFIG = {
-  version: 1,
   permissions: {
     allow: [],
-    deny: ["Mcp(*:*)"],
+    deny: [
+      "Write(*)",
+      "Shell(*)",
+      "Edit(*)",
+      "Delete(*)",
+      "Mcp(*:*)",
+    ],
   },
 } as const;
 

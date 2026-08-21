@@ -23,9 +23,11 @@ describe("kilo/cursor-cli-bridge", () => {
     ).toBe(true);
   });
 
-  it("writes valid cli.json with permissions.allow array", () => {
-    expect(KILO_PASSTHROUGH_BRIDGE_CLI_CONFIG.version).toBe(1);
+  it("writes valid project cli.json permissions without top-level version", () => {
+    expect(KILO_PASSTHROUGH_BRIDGE_CLI_CONFIG).not.toHaveProperty("version");
     expect(Array.isArray(KILO_PASSTHROUGH_BRIDGE_CLI_CONFIG.permissions.allow)).toBe(true);
+    expect(KILO_PASSTHROUGH_BRIDGE_CLI_CONFIG.permissions.deny).toContain("Mcp(*:*)");
+    expect(KILO_PASSTHROUGH_BRIDGE_CLI_CONFIG.permissions.deny).toContain("Write(*)");
     expect(KILO_PASSTHROUGH_BRIDGE_CLI_CONFIG).not.toHaveProperty("approvalMode");
   });
 });

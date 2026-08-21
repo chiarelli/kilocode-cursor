@@ -22,8 +22,9 @@ import {
   type StreamJsonEvent,
 } from "./streaming/types.js";
 import {
-  createChatCompletionUsageChunk,
+  appendOpenAiUsage,
   extractOpenAiUsageFromResult,
+  formatStreamUsageAndDoneSse,
   type OpenAiUsage,
 } from "./usage.js";
 import { createLogger } from "./utils/logger.js";
@@ -932,6 +933,23 @@ export async function fetchProxyHealthWithTimeout(
 }
 
 const FORCE_TOOL_MODE = process.env.CURSOR_KILO_FORCE !== "false";
+
+function isUsageDrainDisabled(): boolean {
+  const raw = process.env.CURSOR_KILO_USAGE_DRAIN?.trim().toLowerCase();
+  return raw === "0" || raw === "false" || raw === "off" || raw === "no";
+}
+
+function readUsageDrainTimeoutMs(): number {
+  const raw = process.env.CURSOR_KILO_USAGE_DRAIN_MS;
+  if (raw === undefined || raw.trim() === "") {
+    return 30_000;
+  }
+  const parsed = Number.parseInt(raw, 10);
+  if (!Number.isFinite(parsed) || parsed < 0) {
+    return 30_000;
+  }
+  return parsed;
+}
 const EMIT_TOOL_UPDATES = process.env.CURSOR_KILO_EMIT_TOOL_UPDATES === "true";
 const FORWARD_TOOL_CALLS = process.env.CURSOR_KILO_FORWARD_TOOL_CALLS !== "false";
 
@@ -1566,9 +1584,12 @@ export async function ensureCursorProxyServer(
             name: toolCall.function.name,
             callId: toolCall.id,
           });
-          const payload = boundaryContext.run(
-            "createNonStreamToolCallResponse",
-            (boundary) => boundary.createNonStreamToolCallResponse(meta, toolCall),
+          const payload = appendOpenAiUsage(
+            boundaryContext.run(
+              "createNonStreamToolCallResponse",
+              (boundary) => boundary.createNonStreamToolCallResponse(meta, toolCall),
+            ),
+            extractCompletionFromStream(stdout).usage,
           );
           return new Response(JSON.stringify(payload), {
             status: 200,
@@ -1586,9 +1607,12 @@ export async function ensureCursorProxyServer(
             name: toolCall.function.name,
             callId: toolCall.id,
           });
-          const payload = boundaryContext.run(
-            "createNonStreamBridgeToolCallResponse",
-            (boundary) => boundary.createNonStreamToolCallResponse(meta, toolCall),
+          const payload = appendOpenAiUsage(
+            boundaryContext.run(
+              "createNonStreamBridgeToolCallResponse",
+              (boundary) => boundary.createNonStreamToolCallResponse(meta, toolCall),
+            ),
+            extractCompletionFromStream(stdout).usage,
           );
           return new Response(JSON.stringify(payload), {
             status: 200,
@@ -1653,6 +1677,7 @@ export async function ensureCursorProxyServer(
           let firstSseWritten = false;
           let sawSuccessfulStreamOutput = false;
           let usage: OpenAiUsage | undefined;
+          let toolCallFinishPending = false;
           const enqueueSse = (payload: string) => {
             if (!firstSseWritten) {
               perf.mark("first-sse-write");
@@ -1667,7 +1692,30 @@ export async function ensureCursorProxyServer(
             const bridgeDetector = bridgeJsonEnabled
               ? new BridgeJsonStreamDetector(allowedToolNames, toolSchemaMap.get("write"))
               : null;
+            let usageDrainTimer: ReturnType<typeof setTimeout> | undefined;
+            const clearUsageDrainTimer = () => {
+              if (usageDrainTimer !== undefined) {
+                clearTimeout(usageDrainTimer);
+                usageDrainTimer = undefined;
+              }
+            };
+            const finalizeOpenAiStream = () => {
+              if (streamTerminated) return;
+              clearUsageDrainTimer();
+              for (const payload of formatStreamUsageAndDoneSse(id, created, model, usage)) {
+                enqueueSse(payload);
+              }
+              streamTerminated = true;
+              try {
+                child.kill();
+              } catch {
+                // ignore
+              }
+            };
             const emitToolCallAndTerminate = (toolCall: OpenAiToolCall) => {
+              if (streamTerminated || toolCallFinishPending) {
+                return;
+              }
               log.debug("Intercepted OpenCode tool call (stream)", {
                 name: toolCall.function.name,
                 callId: toolCall.id,
@@ -1680,12 +1728,25 @@ export async function ensureCursorProxyServer(
               for (const chunk of streamChunks) {
                 enqueueSse(`data: ${JSON.stringify(chunk)}\n\n`);
               }
-              enqueueSse(formatSseDone());
-              streamTerminated = true;
-              try {
-                child.kill();
-              } catch {
-                // ignore
+              toolCallFinishPending = true;
+              if (isUsageDrainDisabled()) {
+                try {
+                  child.kill();
+                } catch {
+                  // ignore
+                }
+                return;
+              }
+              const drainTimeoutMs = readUsageDrainTimeoutMs();
+              if (drainTimeoutMs > 0) {
+                usageDrainTimer = setTimeout(() => {
+                  if (!streamTerminated && toolCallFinishPending) {
+                    log.debug("Usage drain timed out after tool intercept", {
+                      drainTimeoutMs,
+                    });
+                    finalizeOpenAiStream();
+                  }
+                }, drainTimeoutMs);
               }
             };
             const emitBridgeEvent = (event: StreamJsonEvent) => {
@@ -1740,6 +1801,25 @@ export async function ensureCursorProxyServer(
                 if (streamTerminated) break;
                 const event = parseStreamJsonLine(line);
                 if (!event) {
+                  continue;
+                }
+                if (toolCallFinishPending) {
+                  if (isResult(event)) {
+                    usage = extractOpenAiUsageFromResult(event) ?? usage;
+                    if (isSuccessfulResultEvent(event)) {
+                      sawSuccessfulStreamOutput = true;
+                    }
+                    finalizeOpenAiStream();
+                    break;
+                  }
+                  captureResumeChatIdFromEvent(
+                    event,
+                    sessionResumeKey,
+                    model,
+                    workspaceDirectory,
+                    sessionResumeRecordContentPrefix,
+                    sessionResumeToolFingerprint,
+                  );
                   continue;
                 }
                 captureResumeChatIdFromEvent(
@@ -1835,6 +1915,25 @@ export async function ensureCursorProxyServer(
               if (!event) {
                 continue;
               }
+              if (toolCallFinishPending) {
+                if (isResult(event)) {
+                  usage = extractOpenAiUsageFromResult(event) ?? usage;
+                  if (isSuccessfulResultEvent(event)) {
+                    sawSuccessfulStreamOutput = true;
+                  }
+                  finalizeOpenAiStream();
+                  break;
+                }
+                captureResumeChatIdFromEvent(
+                  event,
+                  sessionResumeKey,
+                  model,
+                  workspaceDirectory,
+                  sessionResumeRecordContentPrefix,
+                  sessionResumeToolFingerprint,
+                );
+                continue;
+              }
               captureResumeChatIdFromEvent(
                 event,
                 sessionResumeKey,
@@ -1911,6 +2010,10 @@ export async function ensureCursorProxyServer(
                 enqueueSse(sse);
               }
             }
+            if (toolCallFinishPending && !streamTerminated) {
+              finalizeOpenAiStream();
+              return;
+            }
             if (streamTerminated) {
               return;
             }
@@ -1970,11 +2073,9 @@ export async function ensureCursorProxyServer(
 
             const doneChunk = createChatCompletionChunk(id, created, model, "", true);
             enqueueSse(`data: ${JSON.stringify(doneChunk)}\n\n`);
-            if (usage) {
-              const usageChunk = createChatCompletionUsageChunk(id, created, model, usage);
-              enqueueSse(`data: ${JSON.stringify(usageChunk)}\n\n`);
+            for (const payload of formatStreamUsageAndDoneSse(id, created, model, usage)) {
+              enqueueSse(payload);
             }
-            enqueueSse(formatSseDone());
           } finally {
             perf.mark("request:done");
             perf.summarize();
@@ -2215,9 +2316,12 @@ export async function ensureCursorProxyServer(
               name: toolCall.function.name,
               callId: toolCall.id,
             });
-            const payload = boundaryContext.run(
-              "createNonStreamToolCallResponse",
-              (boundary) => boundary.createNonStreamToolCallResponse(meta, toolCall),
+            const payload = appendOpenAiUsage(
+              boundaryContext.run(
+                "createNonStreamToolCallResponse",
+                (boundary) => boundary.createNonStreamToolCallResponse(meta, toolCall),
+              ),
+              extractCompletionFromStream(stdout).usage,
             );
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify(payload));
@@ -2234,9 +2338,12 @@ export async function ensureCursorProxyServer(
               name: toolCall.function.name,
               callId: toolCall.id,
             });
-            const payload = boundaryContext.run(
-              "createNonStreamBridgeToolCallResponse",
-              (boundary) => boundary.createNonStreamToolCallResponse(meta, toolCall),
+            const payload = appendOpenAiUsage(
+              boundaryContext.run(
+                "createNonStreamBridgeToolCallResponse",
+                (boundary) => boundary.createNonStreamToolCallResponse(meta, toolCall),
+              ),
+              extractCompletionFromStream(stdout).usage,
             );
             res.writeHead(200, { "Content-Type": "application/json" });
             res.end(JSON.stringify(payload));
@@ -2311,6 +2418,7 @@ export async function ensureCursorProxyServer(
         let firstSseWritten = false;
         let sawSuccessfulStreamOutput = false;
         let usage: OpenAiUsage | undefined;
+        let toolCallFinishPending = false;
         const writeSse = (payload: string) => {
           if (!firstSseWritten) {
             perf.mark("first-sse-write");
@@ -2335,8 +2443,31 @@ export async function ensureCursorProxyServer(
           streamTerminated = true;
           res.end();
         });
-        const emitToolCallAndTerminate = (toolCall: OpenAiToolCall) => {
+        let usageDrainTimer: ReturnType<typeof setTimeout> | undefined;
+        const clearUsageDrainTimer = () => {
+          if (usageDrainTimer !== undefined) {
+            clearTimeout(usageDrainTimer);
+            usageDrainTimer = undefined;
+          }
+        };
+        const finalizeOpenAiStream = () => {
           if (streamTerminated || res.writableEnded) {
+            return;
+          }
+          clearUsageDrainTimer();
+          for (const payload of formatStreamUsageAndDoneSse(id, created, model, usage)) {
+            writeSse(payload);
+          }
+          streamTerminated = true;
+          res.end();
+          try {
+            child.kill();
+          } catch {
+            // ignore
+          }
+        };
+        const emitToolCallAndTerminate = (toolCall: OpenAiToolCall) => {
+          if (streamTerminated || res.writableEnded || toolCallFinishPending) {
             return;
           }
           log.debug("Intercepted OpenCode tool call (stream)", {
@@ -2351,13 +2482,25 @@ export async function ensureCursorProxyServer(
           for (const chunk of streamChunks) {
             writeSse(`data: ${JSON.stringify(chunk)}\n\n`);
           }
-          writeSse(formatSseDone());
-          streamTerminated = true;
-          res.end();
-          try {
-            child.kill();
-          } catch {
-            // ignore
+          toolCallFinishPending = true;
+          if (isUsageDrainDisabled()) {
+            try {
+              child.kill();
+            } catch {
+              // ignore
+            }
+            return;
+          }
+          const drainTimeoutMs = readUsageDrainTimeoutMs();
+          if (drainTimeoutMs > 0) {
+            usageDrainTimer = setTimeout(() => {
+              if (!streamTerminated && !res.writableEnded && toolCallFinishPending) {
+                log.debug("Usage drain timed out after tool intercept", {
+                  drainTimeoutMs,
+                });
+                finalizeOpenAiStream();
+              }
+            }, drainTimeoutMs);
           }
         };
         const emitTerminalAssistantErrorAndTerminate = (message: string) => {
@@ -2412,6 +2555,25 @@ export async function ensureCursorProxyServer(
             if (streamTerminated || res.writableEnded) break;
             const event = parseStreamJsonLine(line);
             if (!event) continue;
+            if (toolCallFinishPending) {
+              if (isResult(event)) {
+                usage = extractOpenAiUsageFromResult(event) ?? usage;
+                if (isSuccessfulResultEvent(event)) {
+                  sawSuccessfulStreamOutput = true;
+                }
+                finalizeOpenAiStream();
+                break;
+              }
+              captureResumeChatIdFromEvent(
+                event,
+                sessionResumeKey,
+                model,
+                workspaceDirectory,
+                sessionResumeRecordContentPrefix,
+                sessionResumeToolFingerprint,
+              );
+              continue;
+            }
             captureResumeChatIdFromEvent(
               event,
               sessionResumeKey,
@@ -2560,6 +2722,11 @@ export async function ensureCursorProxyServer(
                 await toastService.showErrorSummary(passThroughSummary.errors);
               }
 
+              if (toolCallFinishPending) {
+                finalizeOpenAiStream();
+                return;
+              }
+
               const doneChunk = {
                 id,
                 object: "chat.completion.chunk",
@@ -2568,11 +2735,9 @@ export async function ensureCursorProxyServer(
                 choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
               };
               writeSse(`data: ${JSON.stringify(doneChunk)}\n\n`);
-              if (usage) {
-                const usageChunk = createChatCompletionUsageChunk(id, created, model, usage);
-                writeSse(`data: ${JSON.stringify(usageChunk)}\n\n`);
+              for (const payload of formatStreamUsageAndDoneSse(id, created, model, usage)) {
+                writeSse(payload);
               }
-              writeSse(formatSseDone());
               streamTerminated = true;
               res.end();
             }

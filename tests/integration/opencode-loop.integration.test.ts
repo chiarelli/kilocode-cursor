@@ -435,6 +435,29 @@ process.stdin.on("end", () => {
         message: { role: "assistant", content: [{ type: "text", text: "42}" }] },
       },
     ];
+  } else if (scenario === "tool-read-with-usage") {
+    events = [
+      {
+        type: "tool_call",
+        call_id: "c1",
+        tool_call: {
+          readToolCall: {
+            args: { path: "foo.txt" },
+          },
+        },
+      },
+      {
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        usage: {
+          inputTokens: 1000,
+          outputTokens: 12,
+          cacheReadTokens: 240,
+          cacheWriteTokens: 0,
+        },
+      },
+    ];
   } else {
     events = [
       {
@@ -636,6 +659,54 @@ describe("OpenCode-owned tool loop integration", () => {
     delete process.env.MOCK_CURSOR_ARGS_FILE;
     delete process.env.MOCK_CURSOR_SCENARIO;
     rmSync(mockDir, { recursive: true, force: true });
+  });
+
+  it("emits usage chunk when streaming tool_call terminates", async () => {
+    process.env.MOCK_CURSOR_SCENARIO = "tool-read-with-usage";
+    process.env.MOCK_CURSOR_PROMPT_FILE = "";
+
+    const response = await requestCompletion(baseURL, {
+      model: "auto",
+      stream: true,
+      tools: [READ_TOOL],
+      messages: [{ role: "user", content: "Read foo.txt" }],
+    });
+
+    const body = await response.text();
+    const dataLines = parseSseData(body);
+    const chunks = parseJsonChunks(dataLines);
+    const usageChunk = chunks.find((chunk) => chunk.usage?.prompt_tokens != null);
+
+    expect(usageChunk?.usage).toEqual({
+      prompt_tokens: 1240,
+      completion_tokens: 12,
+      total_tokens: 1252,
+      prompt_tokens_details: {
+        cached_tokens: 240,
+        cache_write_tokens: 0,
+      },
+      completion_tokens_details: {
+        reasoning_tokens: 0,
+      },
+    });
+    expect(dataLines[dataLines.length - 1]).toBe("[DONE]");
+  });
+
+  it("returns usage on non-streaming tool_calls response", async () => {
+    process.env.MOCK_CURSOR_SCENARIO = "tool-read-with-usage";
+    process.env.MOCK_CURSOR_PROMPT_FILE = "";
+
+    const response = await requestCompletion(baseURL, {
+      model: "auto",
+      stream: false,
+      tools: [READ_TOOL],
+      messages: [{ role: "user", content: "Read foo.txt" }],
+    });
+
+    const json: any = await response.json();
+    expect(json.choices?.[0]?.finish_reason).toBe("tool_calls");
+    expect(json.usage?.prompt_tokens).toBe(1240);
+    expect(json.usage?.completion_tokens).toBe(12);
   });
 
   it("intercepts streaming tool_call and terminates with tool_calls finish", async () => {
