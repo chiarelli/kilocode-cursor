@@ -48,7 +48,7 @@ export type KiloCatalogResult = {
   resolveWireModel: (configModelId: string, variantKey?: string) => string | undefined;
 };
 
-function formatDisplayName(family: string, thinking: boolean): string {
+function formatDisplayName(family: string, thinking: boolean, fastTier = false): string {
   const base = family
     .split("-")
     .map((p) => {
@@ -57,7 +57,28 @@ function formatDisplayName(family: string, thinking: boolean): string {
       return p.charAt(0).toUpperCase() + p.slice(1);
     })
     .join(" ");
-  return thinking ? `${base} (Thinking)` : base;
+  const withThinking = thinking ? `${base} (Thinking)` : base;
+  return fastTier ? `${withThinking} Fast` : withThinking;
+}
+
+function isFastVariant(variant: string | null): boolean {
+  if (variant === null) return false;
+  return variant === "fast" || variant.endsWith("-fast");
+}
+
+/** Map fast-tier wire variants to standard effort keys (high-fast → high). */
+function normalizeVariantForTier(variant: string | null, fastTier: boolean): string | null {
+  if (variant === null) return null;
+  if (!fastTier) return variant;
+  if (variant === "fast") return null;
+  if (variant.endsWith("-fast")) return variant.slice(0, -"-fast".length);
+  return variant;
+}
+
+function configKey(family: string, thinking: boolean, fastTier = false): string {
+  let slug = thinking ? `${family}-thinking` : family;
+  if (fastTier) slug = `${slug}-fast`;
+  return slug;
 }
 
 /** Cursor-branded Grok models keep the `cursor-` prefix in cursor-agent wire IDs. */
@@ -125,11 +146,6 @@ function parseModel(model: DiscoveredCursorModel): ParsedModel | null {
   return null;
 }
 
-function configKey(family: string, thinking: boolean): string {
-  const slug = thinking ? `${family}-thinking` : family;
-  return slug;
-}
-
 function inferCapabilities(family: string, thinking: boolean): Partial<KiloModelEntry> {
   const entry: Partial<KiloModelEntry> = {
     tool_call: true,
@@ -147,7 +163,7 @@ function inferCapabilities(family: string, thinking: boolean): Partial<KiloModel
 }
 
 export function buildKiloModelCatalog(discovered: DiscoveredCursorModel[]): KiloCatalogResult {
-  const groups = new Map<string, { thinking: boolean; members: ParsedModel[] }>();
+  const groups = new Map<string, { thinking: boolean; fastTier: boolean; members: ParsedModel[] }>();
   const discoveredById = new Map(discovered.map((model) => [model.id, model]));
 
   for (const model of discovered) {
@@ -156,8 +172,9 @@ export function buildKiloModelCatalog(discovered: DiscoveredCursorModel[]): Kilo
     }
     const parsed = parseModel(model);
     if (!parsed) continue;
-    const key = `${parsed.family}\0${parsed.thinking}`;
-    const group = groups.get(key) ?? { thinking: parsed.thinking, members: [] };
+    const fastTier = isFastVariant(parsed.variant);
+    const key = `${parsed.family}\0${parsed.thinking}\0${fastTier ? "fast" : "standard"}`;
+    const group = groups.get(key) ?? { thinking: parsed.thinking, fastTier, members: [] };
     group.members.push(parsed);
     groups.set(key, group);
   }
@@ -172,18 +189,26 @@ export function buildKiloModelCatalog(discovered: DiscoveredCursorModel[]): Kilo
   for (const [, group] of groups) {
     if (group.members.length === 0) continue;
     const family = group.members[0]!.family;
-    const ck = configKey(family, group.thinking);
+    const ck = configKey(family, group.thinking, group.fastTier);
 
-    const variantMembers = group.members.filter((m) => m.variant !== null);
+    const normalizedMembers = group.members.map((member) => ({
+      ...member,
+      variant: normalizeVariantForTier(member.variant, group.fastTier),
+    }));
+
+    const variantMembers = normalizedMembers.filter((m) => m.variant !== null);
     const defaultMember =
-      group.members.find((m) => m.variant === null)
-      ?? group.members.find((m) => m.variant === "medium")
-      ?? group.members[0]!;
+      normalizedMembers.find((m) => m.variant === null)
+      ?? normalizedMembers.find((m) => m.variant === "medium")
+      ?? normalizedMembers[0]!;
 
     const entry: KiloModelEntry = {
-      name: formatDisplayName(family, group.thinking),
+      name: formatDisplayName(family, group.thinking, group.fastTier),
       ...inferCapabilities(family, group.thinking),
     };
+    if (group.thinking || variantMembers.length > 0) {
+      entry.reasoning = true;
+    }
 
     const defaultCost = getCursorModelCost(defaultMember.wireId);
     if (defaultCost) entry.cost = defaultCost;
@@ -200,19 +225,17 @@ export function buildKiloModelCatalog(discovered: DiscoveredCursorModel[]): Kilo
     registerWire(ck, null, defaultMember.wireId);
 
     if (variantMembers.length > 0) {
-      entry.reasoning = true;
       entry.variants = {};
       for (const member of variantMembers) {
         const variantKey = member.variant!;
-        const effort = variantKey.replace(/-fast$/, "").replace(/-thinking$/, "");
         entry.variants[variantKey] = {
-          reasoning: { effort },
+          reasoning: { effort: variantKey },
           options: { cursorModel: member.wireId },
         };
         registerWire(ck, variantKey, member.wireId);
         const variantCost = getCursorModelCost(member.wireId);
         if (variantCost && entry.variants[variantKey]) {
-          (entry.variants[variantKey] as any).cost = variantCost;
+          (entry.variants[variantKey] as { cost?: OpenCodeModelCost }).cost = variantCost;
         }
       }
     }
@@ -343,9 +366,11 @@ export function mergeKiloModelCatalog(
 function mergePreservingUserFields(existing: unknown, generated: KiloModelEntry): KiloModelEntry {
   if (!existing || typeof existing !== "object") return generated;
   const e = existing as Record<string, unknown>;
-  const merged: KiloModelEntry = { ...generated, ...e } as KiloModelEntry;
-  if (e.cost !== undefined) merged.cost = e.cost as OpenCodeModelCost;
+  const merged: KiloModelEntry = { ...generated };
   if (e.name !== undefined) merged.name = String(e.name);
+  if (e.cost !== undefined) {
+    merged.cost = e.cost as OpenCodeModelCost;
+  }
   if (generated.limit?.context !== undefined) {
     const existingLimit = e.limit && typeof e.limit === "object" && !Array.isArray(e.limit)
       ? e.limit as Record<string, unknown>
@@ -355,7 +380,38 @@ function mergePreservingUserFields(existing: unknown, generated: KiloModelEntry)
       output: readLimitNumber(existingLimit.output) ?? generated.limit.output,
     };
   }
+  merged.variants = mergeVariantEntries(generated.variants, e.variants);
   return merged;
+}
+
+function mergeVariantEntries(
+  generated?: KiloModelEntry["variants"],
+  existing?: unknown,
+): KiloModelEntry["variants"] {
+  if (!generated) return undefined;
+  if (!existing || typeof existing !== "object" || Array.isArray(existing)) {
+    return generated;
+  }
+
+  const mergedVariants: NonNullable<KiloModelEntry["variants"]> = { ...generated };
+  for (const [variantKey, existingVariant] of Object.entries(existing as Record<string, unknown>)) {
+    const generatedVariant = generated[variantKey];
+    if (!generatedVariant) continue;
+    if (!existingVariant || typeof existingVariant !== "object" || Array.isArray(existingVariant)) {
+      continue;
+    }
+    const existingRecord = existingVariant as Record<string, unknown>;
+    const variantMerged = { ...generatedVariant, ...existingRecord } as NonNullable<
+      KiloModelEntry["variants"]
+    >[string];
+    if (existingRecord.cost !== undefined) {
+      variantMerged.cost = existingRecord.cost as OpenCodeModelCost;
+    } else if (generatedVariant.cost !== undefined) {
+      variantMerged.cost = generatedVariant.cost;
+    }
+    mergedVariants[variantKey] = variantMerged;
+  }
+  return mergedVariants;
 }
 
 function readLimitNumber(value: unknown): number | undefined {

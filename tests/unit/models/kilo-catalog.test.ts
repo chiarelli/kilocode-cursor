@@ -17,6 +17,7 @@ describe("kilo-catalog", () => {
       { id: "claude-fable-5-max", name: "Claude Fable 5 Max", contextLimit: 1000000 },
       { id: "claude-fable-5-thinking-low", name: "Claude Fable 5 Thinking Low", contextLimit: 200000 },
       { id: "claude-fable-5-thinking-high", name: "Claude Fable 5 Thinking High", contextLimit: 200000 },
+      { id: "claude-fable-5-thinking-high-fast", name: "Claude Fable 5 Thinking High Fast", contextLimit: 200000 },
     ];
 
     const { models } = buildKiloModelCatalog(discovered);
@@ -30,10 +31,15 @@ describe("kilo-catalog", () => {
     expect(models["claude-fable-5"]?.variants?.high?.options?.cursorModel).toBe(
       "claude-fable-5-high",
     );
+    expect(models["claude-fable-5"]?.variants?.["high-fast"]).toBeUndefined();
 
     expect(models["claude-fable-5-thinking"]).toBeDefined();
     expect(models["claude-fable-5-thinking"]?.variants?.high?.options?.cursorModel).toBe(
       "claude-fable-5-thinking-high",
+    );
+    expect(models["claude-fable-5-thinking-fast"]).toBeDefined();
+    expect(models["claude-fable-5-thinking-fast"]?.variants?.high?.options?.cursorModel).toBe(
+      "claude-fable-5-thinking-high-fast",
     );
   });
 
@@ -56,11 +62,76 @@ describe("kilo-catalog", () => {
   it("keeps cursor- prefix on Grok wire ids from discovery", () => {
     const { models } = buildKiloModelCatalog([
       { id: "cursor-grok-4.6-medium", name: "Cursor Grok 4.6 Medium" },
-      { id: "cursor-grok-4.6-high", name: "Cursor Grok 4.6" },
+      { id: "cursor-grok-4.6-high", name: "Cursor Grok 4.6 High" },
+      { id: "cursor-grok-4.6-medium-fast", name: "Cursor Grok 4.6 Medium Fast" },
+      { id: "cursor-grok-4.6-high-fast", name: "Cursor Grok 4.6 High Fast" },
     ]);
 
     expect(models["grok-4.6"]?.options?.cursorModel).toBe("cursor-grok-4.6-medium");
     expect(models["grok-4.6"]?.variants?.high?.options?.cursorModel).toBe("cursor-grok-4.6-high");
+    expect(models["grok-4.6"]?.variants?.["high-fast"]).toBeUndefined();
+    expect(models["grok-4.6"]?.cost).toEqual({
+      input: 2,
+      output: 6,
+      cache_read: 0.5,
+      cache_write: 0,
+    });
+
+    expect(models["grok-4.6-fast"]?.options?.cursorModel).toBe("cursor-grok-4.6-medium-fast");
+    expect(models["grok-4.6-fast"]?.variants?.high?.options?.cursorModel).toBe(
+      "cursor-grok-4.6-high-fast",
+    );
+    expect(models["grok-4.6-fast"]?.cost).toEqual({
+      input: 4,
+      output: 12,
+      cache_read: 1,
+      cache_write: 0,
+    });
+  });
+
+  it("splits composer fast models into a separate config entry", () => {
+    const { models } = buildKiloModelCatalog([
+      { id: "composer-2.5", name: "Composer 2.5" },
+      { id: "composer-2.5-fast", name: "Composer 2.5 Fast" },
+    ]);
+
+    expect(models["composer-2.5"]?.options?.cursorModel).toBe("composer-2.5");
+    expect(models["composer-2.5"]?.variants?.fast).toBeUndefined();
+    expect(models["composer-2.5-fast"]?.options?.cursorModel).toBe("composer-2.5-fast");
+    expect(models["composer-2.5-fast"]?.name).toBe("Composer 2.5 Fast");
+  });
+
+  it("fills generated costs on sync when existing entry has none", () => {
+    const existing = {
+      "grok-4.6": {
+        name: "Grok 4.6",
+        options: { cursorModel: "cursor-grok-4.6-medium" },
+        variants: {
+          high: {
+            reasoning: { effort: "high" },
+            options: { cursorModel: "cursor-grok-4.6-high" },
+          },
+        },
+      },
+    };
+    const discovered = [
+      { id: "cursor-grok-4.6-medium", name: "Cursor Grok 4.6 Medium" },
+      { id: "cursor-grok-4.6-high", name: "Cursor Grok 4.6 High" },
+    ];
+
+    const { models } = mergeKiloModelCatalog(existing, discovered, false);
+    expect(models["grok-4.6"]?.cost).toEqual({
+      input: 2,
+      output: 6,
+      cache_read: 0.5,
+      cache_write: 0,
+    });
+    expect((models["grok-4.6"] as any)?.variants?.high?.cost).toEqual({
+      input: 2,
+      output: 6,
+      cache_read: 0.5,
+      cache_write: 0,
+    });
   });
 
   it("normalizes legacy grok wire ids without cursor- prefix", () => {
