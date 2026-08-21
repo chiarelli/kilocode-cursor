@@ -3,6 +3,7 @@ import {
   buildKiloCatalogFromConfigModels,
   buildKiloModelCatalog,
   mergeKiloModelCatalog,
+  normalizeCursorAgentWireId,
   resolveWireModelFromRequest,
 } from "../../../src/models/kilo-catalog.js";
 
@@ -50,6 +51,39 @@ describe("kilo-catalog", () => {
     expect(models["claude-fable-5-high"]).toBeUndefined();
     expect(removedCount).toBeGreaterThan(0);
     expect(models["claude-fable-5"]).toBeDefined();
+  });
+
+  it("keeps cursor- prefix on Grok wire ids from discovery", () => {
+    const { models } = buildKiloModelCatalog([
+      { id: "cursor-grok-4.6-medium", name: "Cursor Grok 4.6 Medium" },
+      { id: "cursor-grok-4.6-high", name: "Cursor Grok 4.6" },
+    ]);
+
+    expect(models["grok-4.6"]?.options?.cursorModel).toBe("cursor-grok-4.6-medium");
+    expect(models["grok-4.6"]?.variants?.high?.options?.cursorModel).toBe("cursor-grok-4.6-high");
+  });
+
+  it("normalizes legacy grok wire ids without cursor- prefix", () => {
+    const catalog = buildKiloCatalogFromConfigModels({
+      "grok-4.6": {
+        options: { cursorModel: "grok-4.6-medium" },
+        variants: {
+          high: {
+            reasoning: { effort: "high" },
+            options: { cursorModel: "grok-4.6-high" },
+          },
+        },
+      },
+    });
+
+    expect(
+      resolveWireModelFromRequest(catalog, "cursor/grok-4.6", {}),
+    ).toBe("cursor-grok-4.6-medium");
+    expect(
+      resolveWireModelFromRequest(catalog, "cursor/grok-4.6", { reasoning: { effort: "high" } }),
+    ).toBe("cursor-grok-4.6-high");
+    expect(normalizeCursorAgentWireId("grok-4.6-medium")).toBe("cursor-grok-4.6-medium");
+    expect(normalizeCursorAgentWireId("gpt-5.3-codex")).toBe("gpt-5.3-codex");
   });
 
   it("resolves reasoning effort to wire model id at runtime", () => {

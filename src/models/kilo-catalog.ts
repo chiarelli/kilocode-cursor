@@ -60,9 +60,16 @@ function formatDisplayName(family: string, thinking: boolean): string {
   return thinking ? `${base} (Thinking)` : base;
 }
 
+/** Cursor-branded Grok models keep the `cursor-` prefix in cursor-agent wire IDs. */
+export function normalizeCursorAgentWireId(wireId: string): string {
+  if (wireId.startsWith("cursor-")) return wireId;
+  if (/^grok-\d/.test(wireId)) return `cursor-${wireId}`;
+  return wireId;
+}
+
 function parseModel(model: DiscoveredCursorModel): ParsedModel | null {
-  const wireId = model.id.replace(/^cursor-/, "");
-  let id = wireId;
+  const wireId = model.id;
+  let id = model.id.replace(/^cursor-/, "");
 
   // thinking-* variants: claude-fable-5-thinking-high
   const thinkingMatch = id.match(/^(.+)-thinking-([a-z0-9-]+)$/i);
@@ -367,6 +374,11 @@ export function normalizeConfigModelId(raw: string): string {
   return id;
 }
 
+function finalizeCursorAgentWireId(wireId: string): string {
+  const stripped = wireId.replace(/^cursor\//, "").replace(/^cursor-kilo\//, "");
+  return normalizeCursorAgentWireId(stripped);
+}
+
 /** Resolve runtime cursor wire model from Kilo request body */
 export function resolveWireModelFromRequest(
   catalog: KiloCatalogResult | null,
@@ -375,24 +387,24 @@ export function resolveWireModelFromRequest(
 ): string {
   const raw = typeof model === "string" ? model.trim() : "";
   const cursorModel = typeof body.cursorModel === "string" ? body.cursorModel.trim() : "";
-  if (cursorModel) return cursorModel.replace(/^cursor\//, "").replace(/^cursor-kilo\//, "");
+  if (cursorModel) return finalizeCursorAgentWireId(cursorModel);
 
   // Variant from Kilo provider options
   const variant = extractVariantEffort(body);
   if (catalog && raw) {
     const configKey = normalizeConfigModelId(raw);
     const resolved = catalog.resolveWireModel(configKey, variant ?? undefined);
-    if (resolved) return resolved;
+    if (resolved) return finalizeCursorAgentWireId(resolved);
 
     if (variant) {
       const family = configKey.replace(/^cursor\//, "");
       const suffixWire = `${family}-${variant}`;
-      if (suffixWire !== family) return suffixWire;
+      if (suffixWire !== family) return finalizeCursorAgentWireId(suffixWire);
     }
   }
 
   const normalized = normalizeConfigModelId(raw);
-  return normalized || "auto";
+  return normalized ? finalizeCursorAgentWireId(normalized) : "auto";
 }
 
 function extractVariantEffort(body: Record<string, unknown>): string | null {

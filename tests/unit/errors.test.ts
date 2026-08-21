@@ -63,6 +63,14 @@ describe("parseAgentError", () => {
 
   it("extracts model details when present", () => {
     const err = parseAgentError(
+      "Cannot use this model: grok-4.6-medium. Available models: auto, claude-3.5-sonnet, gpt-4o",
+    );
+    expect(err.details.requested).toBe("grok-4.6-medium");
+    expect(err.details.available).toBeDefined();
+  });
+
+  it("extracts model details without version truncation", () => {
+    const err = parseAgentError(
       "Cannot use this model: gpt-5. Available models: auto, claude-3.5-sonnet, gpt-4o",
     );
     expect(err.details.requested).toBe("gpt-5");
