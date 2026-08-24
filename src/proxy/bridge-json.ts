@@ -7,6 +7,11 @@ import {
   isPartialStreamDelta,
   type StreamJsonAssistantEvent,
 } from "../streaming/types.js";
+import {
+  buildKiloTaskBridgeContext,
+  extractKiloSubagentsFromTools,
+  type KiloSubagentSummary,
+} from "./kilo-subagents.js";
 import type { OpenAiToolCall } from "./tool-loop.js";
 
 export const BRIDGE_JSON_ENV = "CURSOR_KILO_BRIDGE_JSON";
@@ -16,15 +21,11 @@ For file changes through opencode-cursor, read any needed files first, then resp
 {"name":"write","arguments":{"path":"relative/path","content":"complete file contents"}}
 Use this only for a single complete-file write. Otherwise answer normally or use the available tool format.`;
 
-const TASK_BRIDGE_JSON_CONTEXT = `SYSTEM: OpenCode Task bridge mode is active.
-For Task only, the exact envelope below overrides the earlier generic "standard OpenAI tool_call" instruction. Do not add id, type, or function fields, and do not stringify arguments.
-OpenCode owns the task tool. Do not invoke Cursor's built-in Task tool; it uses a different subagent list. To call OpenCode's task tool, respond with exactly one JSON object and no prose:
-{"name":"task","arguments":{"description":"3-5 words","prompt":"task details","subagent_type":"one name listed in the OpenCode task description"}}
-Use this only when delegating through OpenCode. Otherwise answer normally.`;
-
 type BridgePromptOptions = {
   allowedToolNames: Set<string>;
   env?: Record<string, string | undefined>;
+  kiloSubagents?: KiloSubagentSummary[];
+  tools?: unknown[];
 };
 
 export type BridgeStreamDecision =
@@ -152,7 +153,10 @@ export function applyBridgeJsonPrompt(prompt: string, options: BridgePromptOptio
     options.allowedToolNames.has("task")
     && !result.includes("OpenCode Task bridge mode is active")
   ) {
-    result = result ? `${result}\n\n${TASK_BRIDGE_JSON_CONTEXT}` : TASK_BRIDGE_JSON_CONTEXT;
+    const subagents = options.kiloSubagents
+      ?? (Array.isArray(options.tools) ? extractKiloSubagentsFromTools(options.tools) : []);
+    const taskBridgeContext = buildKiloTaskBridgeContext(subagents);
+    result = result ? `${result}\n\n${taskBridgeContext}` : taskBridgeContext;
   }
   return result;
 }

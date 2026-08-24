@@ -1,6 +1,12 @@
 // src/utils/errors.ts
 
-export type ErrorType = "quota" | "auth" | "network" | "model" | "unknown";
+import {
+  buildCursorNativeTaskRetryMessage,
+  isCursorNativeTaskMisuse,
+  type KiloSubagentSummary,
+} from "../proxy/kilo-subagents.js";
+
+export type ErrorType = "quota" | "auth" | "network" | "model" | "cursor_native_task" | "unknown";
 
 /**
  * Thrown when the cursor-agent binary cannot be found at the expected Windows
@@ -39,10 +45,24 @@ export function stripAnsi(str: string): string {
 /**
  * Parse cursor-agent error output into structured format
  */
-export function parseAgentError(stderr: string | unknown): ParsedError {
+export function parseAgentError(
+  stderr: string | unknown,
+  options?: { kiloSubagents?: KiloSubagentSummary[] },
+): ParsedError {
   const input = typeof stderr === "string" ? stderr : String(stderr ?? "");
   const clean = stripAnsi(input).trim();
+  const kiloSubagents = options?.kiloSubagents ?? [];
 
+  if (isCursorNativeTaskMisuse(clean)) {
+    return {
+      type: "cursor_native_task",
+      recoverable: true,
+      message: clean,
+      userMessage: "Cursor native Task tool was used instead of Kilo's task tool",
+      details: {},
+      suggestion: buildCursorNativeTaskRetryMessage(kiloSubagents, clean),
+    };
+  }
   // Quota/usage limit error
   if (clean.includes("usage limit") || clean.includes("hit your usage limit")) {
     const savingsMatch = clean.match(/saved \$(\d+(?:\.\d+)?)/i);
@@ -222,7 +242,17 @@ export function isResumeSpecificFailure(stderr: unknown): boolean {
 /**
  * Format parsed error for user display
  */
-export function formatErrorForUser(error: ParsedError): string {
+export function formatErrorForUser(
+  error: ParsedError,
+  options?: { kiloSubagents?: KiloSubagentSummary[] },
+): string {
+  if (error.type === "cursor_native_task") {
+    return buildCursorNativeTaskRetryMessage(
+      options?.kiloSubagents ?? [],
+      error.message,
+    );
+  }
+
   let output = `cursor-kilo error: ${error.userMessage || error.message || "Unknown error"}`;
 
   const details = error.details || {};

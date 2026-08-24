@@ -47,6 +47,12 @@ import {
   extractBridgeToolCallFromStreamOutput,
   isBridgeJsonEnabled,
 } from "./proxy/bridge-json.js";
+import {
+  buildKiloSubagentSystemMessage,
+  extractKiloSubagentsFromTools,
+  rewriteCursorNativeTaskMisuse,
+  type KiloSubagentSummary,
+} from "./proxy/kilo-subagents.js";
 import { buildIncrementalPrompt, type ProxyMessage } from "./proxy/incremental-prompt.js";
 import {
   buildSessionKey,
@@ -154,8 +160,14 @@ export function buildAvailableToolsSystemMessage(
   lastToolMap: Array<{ id: string; name: string }>,
   mcpToolDefs: any[],
   mcpToolSummaries?: McpToolSummary[],
+  kiloSubagents: KiloSubagentSummary[] = [],
 ): string | null {
   const parts: string[] = [];
+
+  const kiloSubagentMessage = buildKiloSubagentSystemMessage(kiloSubagents);
+  if (kiloSubagentMessage) {
+    parts.push(kiloSubagentMessage);
+  }
 
   if (lastToolNames.length > 0 || lastToolMap.length > 0) {
     const names = lastToolNames.join(", ");
@@ -204,6 +216,27 @@ export function buildAvailableToolsSystemMessage(
   }
 
   return parts.length > 0 ? parts.join("\n\n") : null;
+}
+
+function applyProxyBridgeJsonPrompt(
+  prompt: string,
+  tools: Array<any>,
+  allowedToolNames: Set<string>,
+): string {
+  const kiloSubagents = extractKiloSubagentsFromTools(tools);
+  return applyBridgeJsonPrompt(prompt, {
+    allowedToolNames,
+    tools,
+    kiloSubagents,
+  });
+}
+
+function finalizeProxyAssistantText(text: string, tools: Array<any>): string {
+  return rewriteCursorNativeTaskMisuse(text, extractKiloSubagentsFromTools(tools));
+}
+
+function proxyKiloSubagents(tools: Array<any>): KiloSubagentSummary[] {
+  return extractKiloSubagentsFromTools(tools);
 }
 
 export async function ensurePluginDirectory(): Promise<void> {
@@ -1442,6 +1475,7 @@ export async function ensureCursorProxyServer(
       const messages: Array<any> = Array.isArray(body?.messages) ? body.messages : [];
       const stream = body?.stream === true;
       const tools = Array.isArray(body?.tools) ? body.tools : [];
+      const kiloSubagents = proxyKiloSubagents(tools);
 
       log.debug("raw request body", {
         model: body?.model,
@@ -1506,7 +1540,7 @@ export async function ensureCursorProxyServer(
       if (kiloSessionId && resolvedPrompt.sessionKey) {
         registerKiloSessionKey(kiloSessionId, resolvedPrompt.sessionKey);
       }
-      const prompt = applyBridgeJsonPrompt(resolvedPrompt.prompt, { allowedToolNames });
+      const prompt = applyProxyBridgeJsonPrompt(resolvedPrompt.prompt, tools, allowedToolNames);
       const {
         resumeChatId,
         sessionKey: sessionResumeKey,
@@ -1656,8 +1690,8 @@ export async function ensureCursorProxyServer(
             code: exitCode,
             failureTextHash: hashForLog(errSource),
           });
-          const parsed = parseAgentError(errSource);
-          const userError = formatErrorForUser(parsed);
+          const parsed = parseAgentError(errSource, { kiloSubagents });
+          const userError = formatErrorForUser(parsed, { kiloSubagents });
           log.error("cursor-cli failed", {
             type: parsed.type,
             failureTextHash: hashForLog(parsed.message),
@@ -1673,7 +1707,7 @@ export async function ensureCursorProxyServer(
 
         const payload = createChatCompletionResponse(
           model,
-          completion.assistantText || stdout || stderr,
+          finalizeProxyAssistantText(completion.assistantText || stdout || stderr, tools),
           completion.reasoningText || undefined,
           completion.usage,
         );
@@ -1783,7 +1817,9 @@ export async function ensureCursorProxyServer(
               }
             };
             const emitBridgeText = (text: string) => {
-              emitBridgeEvent(createAssistantTextEvent(text));
+              emitBridgeEvent(createAssistantTextEvent(
+                finalizeProxyAssistantText(text, tools),
+              ));
             };
             const flushBridgeText = () => {
               const text = bridgeDetector?.flush() ?? "";
@@ -2061,8 +2097,8 @@ export async function ensureCursorProxyServer(
                   code: exitCode,
                   failureTextHash: hashForLog(errSource),
                 });
-                const parsed = parseAgentError(errSource);
-                const msg = formatErrorForUser(parsed);
+                const parsed = parseAgentError(errSource, { kiloSubagents });
+                const msg = formatErrorForUser(parsed, { kiloSubagents });
                 log.error("cursor-cli streaming failed", {
                   type: parsed.type,
                   code: exitCode,
@@ -2197,6 +2233,7 @@ export async function ensureCursorProxyServer(
       const messages: Array<any> = Array.isArray(bodyData?.messages) ? bodyData.messages : [];
       const stream = bodyData?.stream === true;
       const tools = Array.isArray(bodyData?.tools) ? bodyData.tools : [];
+      const kiloSubagents = proxyKiloSubagents(tools);
       const allowedToolNames = buildProxyAllowedToolNames(tools);
       const bridgeJsonEnabled = isBridgeJsonEnabled();
       const toolSchemaMap = buildToolSchemaMap(tools);
@@ -2238,7 +2275,7 @@ export async function ensureCursorProxyServer(
       if (kiloSessionId && resolvedPrompt.sessionKey) {
         registerKiloSessionKey(kiloSessionId, resolvedPrompt.sessionKey);
       }
-      const prompt = applyBridgeJsonPrompt(resolvedPrompt.prompt, { allowedToolNames });
+      const prompt = applyProxyBridgeJsonPrompt(resolvedPrompt.prompt, tools, allowedToolNames);
       const {
         resumeChatId,
         sessionKey: sessionResumeKey,
@@ -2396,8 +2433,8 @@ export async function ensureCursorProxyServer(
               spawnError: spawnErrorText != null,
               failureTextHash: hashForLog(errSource),
             });
-            const parsed = parseAgentError(errSource);
-            const userError = formatErrorForUser(parsed);
+            const parsed = parseAgentError(errSource, { kiloSubagents });
+            const userError = formatErrorForUser(parsed, { kiloSubagents });
             log.error("cursor-cli failed", {
               type: parsed.type,
               failureTextHash: hashForLog(parsed.message),
@@ -2412,7 +2449,7 @@ export async function ensureCursorProxyServer(
 
           const response = createChatCompletionResponse(
             model,
-            completion.assistantText || stdout || stderr,
+            finalizeProxyAssistantText(completion.assistantText || stdout || stderr, tools),
             completion.reasoningText || undefined,
             completion.usage,
           );
@@ -2467,8 +2504,8 @@ export async function ensureCursorProxyServer(
           }
           const errSource = String(error?.message || error);
           log.error("Failed to spawn cursor-agent (stream)", { errorHash: hashForLog(errSource), model });
-          const parsed = parseAgentError(errSource);
-          const msg = formatErrorForUser(parsed);
+          const parsed = parseAgentError(errSource, { kiloSubagents });
+          const msg = formatErrorForUser(parsed, { kiloSubagents });
           const errChunk = createChatCompletionChunk(id, created, model, msg, true);
           writeSse(`data: ${JSON.stringify(errChunk)}\n\n`);
           writeSse(formatSseDone());
@@ -2560,7 +2597,9 @@ export async function ensureCursorProxyServer(
           }
         };
         const emitBridgeText = (text: string) => {
-          emitBridgeEvent(createAssistantTextEvent(text));
+          emitBridgeEvent(createAssistantTextEvent(
+            finalizeProxyAssistantText(text, tools),
+          ));
         };
         const flushBridgeText = () => {
           const text = bridgeDetector?.flush() ?? "";
@@ -2727,8 +2766,8 @@ export async function ensureCursorProxyServer(
                     code: childExitCode,
                     failureTextHash: hashForLog(errSource),
                   });
-                  const parsed = parseAgentError(errSource);
-                  const msg = formatErrorForUser(parsed);
+                  const parsed = parseAgentError(errSource, { kiloSubagents });
+                  const msg = formatErrorForUser(parsed, { kiloSubagents });
                   const errChunk = createChatCompletionChunk(id, created, model, msg, true);
                   writeSse(`data: ${JSON.stringify(errChunk)}\n\n`);
                   writeSse(formatSseDone());
@@ -3273,6 +3312,7 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
     : null;
   let lastToolNames: string[] = [];
   let lastToolMap: Array<{ id: string; name: string }> = [];
+  let lastKiloSubagents: KiloSubagentSummary[] = [];
 
   async function finalizeChatParamTools(tools: unknown): Promise<any[]> {
     let next: any[] = Array.isArray(tools) ? applyCursorWriteToolContract(tools as any[]) : [];
@@ -3445,6 +3485,7 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
             lastToolNames = output.options.tools
               .map((t: any) => t?.function?.name)
               .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
+            lastKiloSubagents = extractKiloSubagentsFromTools(output.options.tools);
           }
         } catch (err) {
           log.debug("Failed to refresh tools", { error: String(err) });
@@ -3504,7 +3545,7 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
         return;
       }
       const systemMessage = buildAvailableToolsSystemMessage(
-        lastToolNames, lastToolMap, mcpToolDefs, mcpToolSummaries,
+        lastToolNames, lastToolMap, mcpToolDefs, mcpToolSummaries, lastKiloSubagents,
       );
       if (!systemMessage) return;
       output.system = output.system || [];

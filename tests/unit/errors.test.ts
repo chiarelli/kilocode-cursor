@@ -34,6 +34,20 @@ describe("parseAgentError", () => {
     expect(err.recoverable).toBe(false);
   });
 
+  it("classifies cursor native task misuse as recoverable with Kilo retry guidance", () => {
+    const err = parseAgentError("Unknown agent type: custom", {
+      kiloSubagents: [{ name: "adversarial", description: "Red-team reviewer" }],
+    });
+    expect(err.type).toBe("cursor_native_task");
+    expect(err.recoverable).toBe(true);
+    const formatted = formatErrorForUser(err, {
+      kiloSubagents: [{ name: "adversarial", description: "Red-team reviewer" }],
+    });
+    expect(formatted).toContain("Kilo's task tool");
+    expect(formatted).toContain("- adversarial: Red-team reviewer");
+    expect(formatted).not.toContain("cursor-kilo error:");
+  });
+
   it("classifies unknown timeout errors as recoverable", () => {
     const err = parseAgentError("request timeout after 30s");
     expect(err.type).toBe("unknown");

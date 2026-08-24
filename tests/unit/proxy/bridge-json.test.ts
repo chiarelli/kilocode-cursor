@@ -269,6 +269,9 @@ describe("proxy/bridge-json", () => {
     const taskPrompt = applyBridgeJsonPrompt(basePrompt, {
       allowedToolNames: new Set(["task"]),
       env: {},
+      kiloSubagents: [
+        { name: "adversarial", description: "Red-team reviewer" },
+      ],
     });
     const readPrompt = applyBridgeJsonPrompt(basePrompt, {
       allowedToolNames: new Set(["read"]),
@@ -281,6 +284,10 @@ describe("proxy/bridge-json", () => {
 
     expect(taskPrompt).toContain("Do not invoke Cursor's built-in Task tool");
     expect(taskPrompt).toContain('"name":"task"');
+    expect(taskPrompt).toContain("Never use subagentType");
+    expect(taskPrompt).toContain('{ custom: "name" }');
+    expect(taskPrompt).toContain("Allowed Kilo subagent_type values:");
+    expect(taskPrompt).toContain("- adversarial: Red-team reviewer");
     expect(taskPrompt).toContain("overrides the earlier generic");
     expect(taskPrompt.indexOf("standard OpenAI")).toBeLessThan(
       taskPrompt.indexOf("overrides the earlier generic"),
