@@ -152,6 +152,74 @@ describe("plugin resume orchestration", () => {
     expect(followUp.prompt).toContain('TOOL_RESULT (name: read, call_id: call_1): {"content":"file contents"}');
   });
 
+  it("isolates resume cache per Kilo session ID for the same opening message", () => {
+    process.env.CURSOR_KILO_SESSION_RESUME = "1";
+    const anchor = deriveConversationAnchor(baseInput.messages)!.anchor;
+
+    const tabAFirst = resolvePromptForBackend({
+      ...baseInput,
+      kiloSessionId: "kilo-tab-a",
+    });
+    const tabBFirst = resolvePromptForBackend({
+      ...baseInput,
+      kiloSessionId: "kilo-tab-b",
+    });
+
+    expect(tabAFirst.sessionKey).not.toBe(tabBFirst.sessionKey);
+    expect(tabAFirst.sessionKey).toBe(
+      buildSessionKey("/workspace", "gpt-5", anchor, "kilo-tab-a"),
+    );
+
+    captureResumeChatIdFromEvent(
+      { type: "system", session_id: "chat-tab-a" } as any,
+      tabAFirst.sessionKey,
+      "gpt-5",
+      "/workspace",
+      tabAFirst.contentPrefix,
+    );
+
+    const tabBFollowUp = resolvePromptForBackend({
+      ...baseInput,
+      kiloSessionId: "kilo-tab-b",
+      messages: [
+        { role: "user", content: "Remember BETA" },
+        { role: "assistant", content: "Got it." },
+        { role: "user", content: "What was the codeword?" },
+      ],
+    });
+
+    expect(tabBFollowUp.resumeChatId).toBeUndefined();
+  });
+
+  it("keeps the same session key after compaction while skipping cached resume", () => {
+    process.env.CURSOR_KILO_SESSION_RESUME = "1";
+    const first = resolvePromptForBackend({
+      ...baseInput,
+      kiloSessionId: "kilo-1",
+    });
+    captureResumeChatIdFromEvent(
+      { type: "system", session_id: "chat-before" } as any,
+      first.sessionKey!,
+      "gpt-5",
+      "/workspace",
+      first.contentPrefix,
+    );
+
+    const afterCompaction = resolvePromptForBackend({
+      ...baseInput,
+      kiloSessionId: "kilo-1",
+      forceFreshCursorSession: true,
+      messages: [
+        { role: "user", content: "Remember BETA" },
+        { role: "assistant", content: "Compacted summary." },
+        { role: "user", content: "Continue from summary" },
+      ],
+    });
+
+    expect(afterCompaction.sessionKey).toBe(first.sessionKey);
+    expect(afterCompaction.resumeChatId).toBeUndefined();
+  });
+
   it("does not reuse a resume chat across diverged same-opening conversations", () => {
     process.env.CURSOR_KILO_SESSION_RESUME = "1";
     const firstTurn = resolvePromptForBackend(baseInput);

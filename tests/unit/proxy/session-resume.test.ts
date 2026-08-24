@@ -168,6 +168,15 @@ describe("session-resume", () => {
     expect(keyA).not.toBe(keyC);
   });
 
+  it("builds distinct keys for different Kilo session IDs with the same anchor", () => {
+    const { anchor } = deriveConversationAnchor([{ role: "user", content: "hello" }]);
+    const keyA = buildSessionKey("/workspace", "gpt-5", anchor, "kilo-tab-a");
+    const keyB = buildSessionKey("/workspace", "gpt-5", anchor, "kilo-tab-b");
+    const legacyKey = buildSessionKey("/workspace", "gpt-5", anchor);
+    expect(keyA).not.toBe(keyB);
+    expect(keyA).not.toBe(legacyKey);
+  });
+
   it("refuses to cache unsafe chat IDs", () => {
     const key = buildSessionKey("/workspace", "gpt-5", "abc123");
     recordResumeChatId(key, "safe-id_123", "hello");

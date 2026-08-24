@@ -13,8 +13,10 @@
  * - Anchor is derived from the first non-meta user message using a heuristic
  *   filter for OpenCode's title-generation prompts. If OpenCode rewords those
  *   prompts, the filter may need updating.
- * - Session resume is keyed per workspace + model + first-message hash. Changing
- *   any of those starts a fresh chat.
+ * - Session resume is keyed per workspace + model + Kilo session ID (when sent
+ *   via X-Kilo-Session-ID) + first-message hash. Changing any of those starts a
+ *   fresh chat. The Kilo session ID survives compaction, so compaction invalidation
+ *   clears the cached Cursor chat for that tab without changing the key.
  * - Session resume is only supported for the cursor-agent backend.
  */
 
@@ -149,8 +151,17 @@ function canonicalizeContentForAnchor(content: unknown): string {
     .join("\n");
 }
 
-/** Build a unique session key from workspace, model, and conversation anchor. */
-export function buildSessionKey(workspace: string, model: string, anchor: string): string {
+/** Build a unique session key from workspace, model, optional Kilo session ID, and anchor. */
+export function buildSessionKey(
+  workspace: string,
+  model: string,
+  anchor: string,
+  kiloSessionId?: string,
+): string {
+  const normalizedKiloSessionId = typeof kiloSessionId === "string" ? kiloSessionId.trim() : "";
+  if (normalizedKiloSessionId) {
+    return `${workspace}\0${model}\0${normalizedKiloSessionId}\0${anchor}`;
+  }
   return `${workspace}\0${model}\0${anchor}`;
 }
 

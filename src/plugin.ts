@@ -460,6 +460,8 @@ export function resolvePromptForBackend(input: {
   tools: Array<any>;
   model: string;
   workspaceDirectory: string;
+  /** Kilo/OpenCode session ID from X-Kilo-Session-ID when available. */
+  kiloSessionId?: string;
   /** Skip cached --resume after Kilo compaction reset for this turn. */
   forceFreshCursorSession?: boolean;
 }): ResolvedPrompt {
@@ -483,7 +485,12 @@ export function resolvePromptForBackend(input: {
   const resumePrefixes = deriveConversationResumePrefixes(input.messages);
   const contentPrefix = resumePrefixes?.lookupContentPrefix ?? anchorContentPrefix;
   const recordContentPrefix = resumePrefixes?.recordContentPrefix ?? contentPrefix;
-  const sessionKey = buildSessionKey(input.workspaceDirectory, input.model, anchor);
+  const sessionKey = buildSessionKey(
+    input.workspaceDirectory,
+    input.model,
+    anchor,
+    input.kiloSessionId,
+  );
   const sessionKeyHash = sanitizeSessionKey(sessionKey);
   const toolFingerprint = buildToolFingerprint(input.tools);
   if (input.forceFreshCursorSession) {
@@ -1533,6 +1540,7 @@ export async function ensureCursorProxyServer(
         tools,
         model,
         workspaceDirectory,
+        kiloSessionId,
         forceFreshCursorSession: kiloSessionId
           ? consumeCompactionInvalidation(kiloSessionId)
           : false,
@@ -2268,6 +2276,7 @@ export async function ensureCursorProxyServer(
         tools,
         model,
         workspaceDirectory,
+        kiloSessionId,
         forceFreshCursorSession: kiloSessionId
           ? consumeCompactionInvalidation(kiloSessionId)
           : false,

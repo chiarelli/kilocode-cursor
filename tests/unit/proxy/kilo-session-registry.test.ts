@@ -39,7 +39,7 @@ describe("kilo-session-registry", () => {
   });
 
   it("clears resume cache for all mapped session keys on compaction", () => {
-    const sessionKey = buildSessionKey("/ws", "model", "anchor");
+    const sessionKey = buildSessionKey("/ws", "model", "anchor", "kilo-1");
     recordResumeChatId(sessionKey, "chat-123", "prefix");
     registerKiloSessionKey("kilo-1", sessionKey);
     clearResumeForKiloSession("kilo-1");
