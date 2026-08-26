@@ -116,7 +116,10 @@ export function checkBun(): CheckResult {
 
 export function checkCursorAgent(): CheckResult {
   try {
-    const output = execFileSync(resolveCursorAgentBinary(), ["--version"], { encoding: "utf8" }).trim();
+    const output = execFileSync(resolveCursorAgentBinary(), ["--version"], {
+      encoding: "utf8",
+      shell: process.platform === "win32",
+    }).trim();
     const version = output.split("\n")[0] || "installed";
     return { name: "cursor-agent", passed: true, message: version };
   } catch {
@@ -134,6 +137,7 @@ export function checkCursorAgentLogin(): CheckResult {
     // Try running a command that requires auth
     execFileSync(resolveCursorAgentBinary(), ["models"], {
       encoding: "utf8",
+      shell: process.platform === "win32",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 3000,
     });
