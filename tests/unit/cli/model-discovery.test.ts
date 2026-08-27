@@ -43,12 +43,14 @@ describe("cli/model-discovery discoverModelsFromCursorAgent", () => {
     const models = discoverModelsFromCursorAgent({
       platform: "win32",
       execFileSync: exec as any,
-      resolveBinary: () => "C:\\cursor-agent\\cursor-agent.cmd",
+      resolveBinary: () => "C:\\Users\\Walter Meier\\AppData\\Local\\cursor-agent\\cursor-agent.cmd",
     });
 
     expect(models).toEqual([{ id: "auto", name: "Auto" }]);
     expect(calls).toHaveLength(1);
-    expect(calls[0].cmd).toBe("C:\\cursor-agent\\cursor-agent.cmd");
+    // shell mode hands the command to cmd.exe unquoted, so a profile path with
+    // a space must arrive quoted or cmd.exe splits it at the space.
+    expect(calls[0].cmd).toBe("\"C:\\Users\\Walter Meier\\AppData\\Local\\cursor-agent\\cursor-agent.cmd\"");
     expect(calls[0].args).toEqual(["models"]);
     expect(calls[0].opts.shell).toBe(true);
   });
@@ -63,9 +65,11 @@ describe("cli/model-discovery discoverModelsFromCursorAgent", () => {
     discoverModelsFromCursorAgent({
       platform: "linux",
       execFileSync: exec as any,
-      resolveBinary: () => "/usr/local/bin/cursor-agent",
+      resolveBinary: () => "/home/walter meier/.cursor-agent/cursor-agent",
     });
 
+    // no shell on posix, so the path is passed through unquoted
+    expect(calls[0].cmd).toBe("/home/walter meier/.cursor-agent/cursor-agent");
     expect(calls[0].opts.shell).toBe(false);
     expect(calls[0].opts.killSignal).toBe("SIGTERM");
   });

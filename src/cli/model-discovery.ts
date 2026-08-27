@@ -1,6 +1,6 @@
 import { execFileSync } from "child_process";
 import { stripAnsi } from "../utils/errors.js";
-import { resolveCursorAgentBinary } from "../utils/binary.js";
+import { formatShellCommandForPlatform, resolveCursorAgentBinary } from "../utils/binary.js";
 
 const MODEL_DISCOVERY_TIMEOUT_MS = 5000;
 
@@ -43,8 +43,11 @@ export function discoverModelsFromCursorAgent(deps: DiscoverDeps = {}): Discover
   const resolveBinary = deps.resolveBinary ?? resolveCursorAgentBinary;
 
   // On Windows cursor-agent is a .cmd shim, which requires shell mode when
-  // spawned from Node (execFileSync of a bare .cmd fails with EINVAL).
-  const raw = exec(resolveBinary(), ["models"], {
+  // spawned from Node (execFileSync of a bare .cmd fails with EINVAL). Shell
+  // mode hands the command to cmd.exe unquoted, so the resolved path must go
+  // through formatShellCommandForPlatform() or a profile name containing a
+  // space splits the command. See the contract in utils/binary.ts.
+  const raw = exec(formatShellCommandForPlatform(resolveBinary(), platform), ["models"], {
     encoding: "utf8",
     shell: platform === "win32",
     ...(platform !== "win32" && { killSignal: "SIGTERM" as const }),

@@ -19,7 +19,7 @@ import {
   discoverModelsFromCursorAgent,
   fallbackModels,
 } from "./model-discovery.js";
-import { resolveCursorAgentBinary } from "../utils/binary.js";
+import { formatShellCommandForPlatform, resolveCursorAgentBinary } from "../utils/binary.js";
 import { getPossibleAuthPaths, isUsableSdkApiKey } from "../auth.js";
 import { parseCursorBackendPreference } from "../provider/backend.js";
 import { isAgentPoolEnabled, parseAgentPoolIdleMs } from "../client/cursor-agent-child.js";
@@ -116,7 +116,7 @@ export function checkBun(): CheckResult {
 
 export function checkCursorAgent(): CheckResult {
   try {
-    const output = execFileSync(resolveCursorAgentBinary(), ["--version"], {
+    const output = execFileSync(formatShellCommandForPlatform(resolveCursorAgentBinary()), ["--version"], {
       encoding: "utf8",
       shell: process.platform === "win32",
     }).trim();
@@ -135,7 +135,7 @@ export function checkCursorAgentLogin(): CheckResult {
   try {
     // cursor-agent stores credentials in ~/.cursor-agent or similar
     // Try running a command that requires auth
-    execFileSync(resolveCursorAgentBinary(), ["models"], {
+    execFileSync(formatShellCommandForPlatform(resolveCursorAgentBinary()), ["models"], {
       encoding: "utf8",
       shell: process.platform === "win32",
       stdio: ["ignore", "pipe", "pipe"],
