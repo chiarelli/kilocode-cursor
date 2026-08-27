@@ -31,10 +31,23 @@ export function parseCursorModelsOutput(output: string): DiscoveredModel[] {
   return models;
 }
 
-export function discoverModelsFromCursorAgent(): DiscoveredModel[] {
-  const raw = execFileSync(resolveCursorAgentBinary(), ["models"], {
+export type DiscoverDeps = {
+  platform?: NodeJS.Platform;
+  execFileSync?: typeof execFileSync;
+  resolveBinary?: () => string;
+};
+
+export function discoverModelsFromCursorAgent(deps: DiscoverDeps = {}): DiscoveredModel[] {
+  const platform = deps.platform ?? process.platform;
+  const exec = deps.execFileSync ?? execFileSync;
+  const resolveBinary = deps.resolveBinary ?? resolveCursorAgentBinary;
+
+  // On Windows cursor-agent is a .cmd shim, which requires shell mode when
+  // spawned from Node (execFileSync of a bare .cmd fails with EINVAL).
+  const raw = exec(resolveBinary(), ["models"], {
     encoding: "utf8",
-    ...(process.platform !== "win32" && { killSignal: "SIGTERM" as const }),
+    shell: platform === "win32",
+    ...(platform !== "win32" && { killSignal: "SIGTERM" as const }),
     stdio: ["ignore", "pipe", "pipe"],
     timeout: MODEL_DISCOVERY_TIMEOUT_MS,
   });
