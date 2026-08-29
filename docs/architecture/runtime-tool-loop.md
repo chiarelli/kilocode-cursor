@@ -72,7 +72,7 @@ Features: alias resolution, schema compat, edit→write reroute, tool-loop guard
 
 ## Model Variant Resolution
 
-Kilo sends `cursorModel` in request options when a model variant defines `options.cursorModel`. The plugin resolves wire model from catalog + reasoning effort (`src/models/runtime-catalog.ts`).
+Kilo sends `cursorModel` in request options when a model variant defines `options.cursorModel`. The plugin resolves wire model from catalog + reasoning effort (`src/models/runtime-catalog.ts`). Effort may arrive as Kilo `message.model.variant`, `reasoning.effort`, or OpenAI-compatible `reasoning_effort` on the proxy body.
 
 Model sync: `kilo-cursor sync-models` (authenticated via Kilo auth store).
 

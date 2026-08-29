@@ -212,4 +212,51 @@ describe("kilo-catalog", () => {
       resolveWireModelFromRequest(catalog, "cursor/cursor/auto", {}),
     ).toBe("auto");
   });
+
+  it("repairs stale bare grok-4.6 cursorModel from synced config", () => {
+    const catalog = buildKiloCatalogFromConfigModels({
+      "grok-4.6": {
+        options: { cursorModel: "grok-4.6" },
+        variants: {
+          high: {
+            reasoning: { effort: "high" },
+            options: { cursorModel: "grok-4.6-high" },
+          },
+        },
+      },
+    });
+
+    expect(catalog.resolveWireModel("grok-4.6")).toBe("cursor-grok-4.6-medium");
+    expect(catalog.resolveWireModel("grok-4.6", "high")).toBe("cursor-grok-4.6-high");
+    expect(
+      resolveWireModelFromRequest(catalog, "cursor/grok-4.6", { cursorModel: "grok-4.6" }),
+    ).toBe("cursor-grok-4.6-medium");
+    expect(
+      resolveWireModelFromRequest(catalog, "cursor/grok-4.6", {
+        cursorModel: "grok-4.6",
+        reasoning: { effort: "high" },
+      }),
+    ).toBe("cursor-grok-4.6-high");
+  });
+
+  it("resolves reasoning_effort from OpenAI-compatible proxy body", () => {
+    const catalog = buildKiloCatalogFromConfigModels({
+      "grok-4.6": {
+        options: { cursorModel: "grok-4.6-medium" },
+        variants: {
+          high: {
+            reasoning: { effort: "high" },
+            options: { cursorModel: "grok-4.6-high" },
+          },
+        },
+      },
+    });
+
+    expect(
+      resolveWireModelFromRequest(catalog, "cursor/grok-4.6", { reasoning_effort: "high" }),
+    ).toBe("cursor-grok-4.6-high");
+    expect(
+      resolveWireModelFromRequest(catalog, "cursor/grok-4.6", { reasoningEffort: "high" }),
+    ).toBe("cursor-grok-4.6-high");
+  });
 });

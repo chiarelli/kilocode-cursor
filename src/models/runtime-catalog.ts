@@ -50,9 +50,42 @@ export function resolveProxyRuntimeModel(
   return resolveWireModelFromRequest(catalog, body.model, body);
 }
 
+export type ChatParamsModelRef = {
+  providerID?: string;
+  modelID?: string;
+  variant?: string;
+};
+
+/** Merge catalog model + per-message session model (variant lives on message.model in Kilo). */
+export function resolveChatParamsModelRef(input: {
+  model?: { id?: string; modelID?: string; providerID?: string; variant?: string };
+  message?: { model?: { modelID?: string; providerID?: string; variant?: string } };
+}): ChatParamsModelRef {
+  const catalogModel = input.model ?? {};
+  const sessionModel = input.message?.model ?? {};
+
+  const modelID =
+    (typeof sessionModel.modelID === "string" && sessionModel.modelID.trim())
+    || (typeof catalogModel.id === "string" && catalogModel.id.trim())
+    || (typeof catalogModel.modelID === "string" && catalogModel.modelID.trim())
+    || "";
+
+  const variant =
+    (typeof sessionModel.variant === "string" && sessionModel.variant.trim())
+    || (typeof catalogModel.variant === "string" && catalogModel.variant.trim())
+    || undefined;
+
+  const providerID =
+    (typeof sessionModel.providerID === "string" && sessionModel.providerID)
+    || (typeof catalogModel.providerID === "string" && catalogModel.providerID)
+    || undefined;
+
+  return { modelID, variant, providerID };
+}
+
 export function resolveChatParamsWireModel(
   catalog: KiloCatalogResult | null,
-  model: { providerID?: string; modelID?: string; variant?: string },
+  model: ChatParamsModelRef,
   options: Record<string, unknown>,
 ): string | undefined {
   if (!catalog) return undefined;

@@ -288,18 +288,26 @@ export function buildKiloCatalogFromConfigModels(
     catalogModels[key] = entry;
 
     if (entry.options?.cursorModel) {
-      registerWire(key, null, entry.options.cursorModel);
+      registerWire(
+        key,
+        null,
+        sanitizeConfiguredWireId(entry.options.cursorModel, key, null),
+      );
     }
 
     if (entry.variants) {
       for (const [variantKey, variant] of Object.entries(entry.variants)) {
         const wire = variant.options?.cursorModel;
         if (wire) {
-          registerWire(key, variantKey, wire);
+          registerWire(
+            key,
+            variantKey,
+            sanitizeConfiguredWireId(wire, key, variantKey),
+          );
         }
         const effort = variant.reasoning?.effort;
         if (effort && wire) {
-          registerWire(key, effort, wire);
+          registerWire(key, effort, sanitizeConfiguredWireId(wire, key, effort));
         }
       }
     }
@@ -435,6 +443,28 @@ function finalizeCursorAgentWireId(wireId: string): string {
   return normalizeCursorAgentWireId(stripped);
 }
 
+/** Grok wire ids are always tiered (e.g. cursor-grok-4.6-medium); bare cursor-grok-4.6 is invalid. */
+const BARE_GROK_FAMILY_WIRE_ID = /^cursor-grok-\d+(?:\.\d+)?$/;
+
+function isBareGrokFamilyWireId(wireId: string): boolean {
+  return BARE_GROK_FAMILY_WIRE_ID.test(wireId);
+}
+
+function sanitizeConfiguredWireId(
+  wireId: string,
+  configKey: string,
+  variantKey: string | null,
+): string {
+  const finalized = finalizeCursorAgentWireId(wireId);
+  if (!isBareGrokFamilyWireId(finalized)) return finalized;
+
+  const family = finalized.replace(/^cursor-/, "");
+  if (variantKey) {
+    return finalizeCursorAgentWireId(`${family}-${variantKey}`);
+  }
+  return finalizeCursorAgentWireId(`${family}-medium`);
+}
+
 /** Resolve runtime cursor wire model from Kilo request body */
 export function resolveWireModelFromRequest(
   catalog: KiloCatalogResult | null,
@@ -442,31 +472,42 @@ export function resolveWireModelFromRequest(
   body: Record<string, unknown>,
 ): string {
   const raw = typeof model === "string" ? model.trim() : "";
-  const cursorModel = typeof body.cursorModel === "string" ? body.cursorModel.trim() : "";
-  if (cursorModel) return finalizeCursorAgentWireId(cursorModel);
-
-  // Variant from Kilo provider options
   const variant = extractVariantEffort(body);
-  if (catalog && raw) {
-    const configKey = normalizeConfigModelId(raw);
+  const configKey = raw ? normalizeConfigModelId(raw) : "";
+
+  if (catalog && configKey) {
     const resolved = catalog.resolveWireModel(configKey, variant ?? undefined);
-    if (resolved) return finalizeCursorAgentWireId(resolved);
+    if (resolved) {
+      return sanitizeConfiguredWireId(resolved, configKey, variant);
+    }
 
     if (variant) {
       const family = configKey.replace(/^cursor\//, "");
       const suffixWire = `${family}-${variant}`;
-      if (suffixWire !== family) return finalizeCursorAgentWireId(suffixWire);
+      if (suffixWire !== family) {
+        return sanitizeConfiguredWireId(suffixWire, configKey, variant);
+      }
     }
   }
 
+  const cursorModel = typeof body.cursorModel === "string" ? body.cursorModel.trim() : "";
+  if (cursorModel) {
+    return sanitizeConfiguredWireId(cursorModel, configKey, variant);
+  }
+
   const normalized = normalizeConfigModelId(raw);
-  return normalized ? finalizeCursorAgentWireId(normalized) : "auto";
+  return normalized ? sanitizeConfiguredWireId(normalized, configKey, variant) : "auto";
 }
 
 function extractVariantEffort(body: Record<string, unknown>): string | null {
   for (const source of collectReasoningSources(body)) {
     const effort = readReasoningEffort(source);
     if (effort) return effort;
+  }
+
+  const directEffort = body.reasoning_effort ?? body.reasoningEffort;
+  if (typeof directEffort === "string" && directEffort.length > 0) {
+    return directEffort;
   }
 
   const variant = body.variant;

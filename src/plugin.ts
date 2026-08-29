@@ -87,6 +87,7 @@ import { SkillResolver } from "./tools/skills/resolver.js";
 import { autoRefreshModels } from "./models/sync.js";
 import {
   loadRuntimeModelCatalog,
+  resolveChatParamsModelRef,
   resolveChatParamsWireModel,
   resolveProxyRuntimeModel,
 } from "./models/runtime-catalog.js";
@@ -3448,17 +3449,18 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
         );
       });
 
+      const chatParamsModel = resolveChatParamsModelRef(input);
       const wireModel = resolveChatParamsWireModel(
         runtimeModelCatalog,
-        input.model ?? {},
+        chatParamsModel,
         output.options ?? {},
       );
       if (wireModel) {
         output.options = output.options ?? {};
         output.options.cursorModel = wireModel;
         log.debug("Resolved cursor wire model from variant/reasoning", {
-          configModel: input.model?.modelID,
-          variant: input.model?.variant,
+          configModel: chatParamsModel.modelID,
+          variant: chatParamsModel.variant,
           wireModel,
         });
       }
