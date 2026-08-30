@@ -49,17 +49,20 @@ Set `CURSOR_KILO_BRIDGE_JSON=0` to disable.
 
 Two layers:
 
-1. **Passthrough (always on)** — Kilo-registered MCP tools (`context7_*`, etc.):
-   - Merged from `client.mcp.tool.list()` in `chat.params`
+1. **Passthrough (always on)** — Kilo-registered MCP tools (`context7_*`, `openviking_*`, etc.):
+   - Merged from `client.mcp.tool.list()` in `chat.params` via hybrid snapshot (`src/mcp/tool-snapshot.ts`)
+   - **Cache hit** when tool fingerprint is unchanged (one `mcp.tool.list()` per request, no re-merge)
+   - **Poll + settle** only while `mcp.status` reports servers `connecting`/`pending` (bootstrap for async plugin MCP registration)
    - Aliases `mcp__server__tool` added for the cursor-agent prompt
    - Interception maps `mcp__*` / `CallMcpTool` back to Kilo native names
    - Blocks `GetMcpTools` passthrough; cursor-agent has no MCP servers in this mode
+   - Env: `CURSOR_KILO_MCP_DISCOVERY` (default on), `CURSOR_KILO_MCP_DISCOVERY_MAX_WAIT_MS`, `CURSOR_KILO_MCP_DISCOVERY_POLL_MS`, `CURSOR_KILO_MCP_DISCOVERY_STABLE_POLLS`
 
 2. **Direct MCP (default ON)** — `CURSOR_KILO_DIRECT_MCP` (legacy `CURSOR_KILO_MCP_BRIDGE`):
    - Reads `mcp` section from `kilo.jsonc`, connects via stdio, registers plugin tool hooks
    - Set `CURSOR_KILO_DIRECT_MCP=false` to disable
 
-Implementation: `src/mcp/kilo-bridge.ts`, `src/kilo/cursor-cli-bridge.ts`, `src/proxy/tool-loop.ts`.
+Implementation: `src/mcp/kilo-bridge.ts`, `src/mcp/tool-snapshot.ts`, `src/kilo/cursor-cli-bridge.ts`, `src/proxy/tool-loop.ts`.
 
 ## Provider Boundary (`legacy` vs `v1`)
 

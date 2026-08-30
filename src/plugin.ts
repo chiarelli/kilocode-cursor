@@ -94,12 +94,11 @@ import {
 import type { KiloCatalogResult } from "./models/kilo-catalog.js";
 import { readMcpConfigs } from "./mcp/config.js";
 import { McpClientManager } from "./mcp/client-manager.js";
+import { buildKiloMcpAliasHint } from "./mcp/kilo-bridge.js";
 import {
-  buildKiloMcpAliasHint,
-  discoverKiloNativeMcpToolDefs,
-  enrichKiloToolsWithMcpAliases,
-  mergeToolDefinitionsByName,
-} from "./mcp/kilo-bridge.js";
+  createChatParamToolSnapshotResolver,
+  resetPromptToolSchemaCacheOnFingerprintChange,
+} from "./mcp/tool-snapshot.js";
 import { isDirectMcpEnabled, removePassthroughBridgeCliConfig, syncKiloPassthroughBridgeCliConfig } from "./kilo/cursor-cli-bridge.js";
 import {
   MCP_TOOL_PREFIX,
@@ -3328,18 +3327,20 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
   let lastToolMap: Array<{ id: string; name: string }> = [];
   let lastKiloSubagents: KiloSubagentSummary[] = [];
 
+  const resolveChatParamToolSnapshot = createChatParamToolSnapshotResolver(client, {
+    applyBaseTools: (tools) => applyCursorWriteToolContract(tools) as any[],
+    getAppendTools: () => mcpToolDefs,
+    onFingerprintChange: resetPromptToolSchemaCacheOnFingerprintChange,
+  });
+
   async function finalizeChatParamTools(tools: unknown): Promise<any[]> {
-    let next: any[] = Array.isArray(tools) ? applyCursorWriteToolContract(tools as any[]) : [];
     try {
-      const nativeMcp = await discoverKiloNativeMcpToolDefs(client);
-      if (nativeMcp.length > 0) {
-        next = mergeToolDefinitionsByName(next, nativeMcp);
-        log.debug("Merged Kilo native MCP tools into chat.params", { count: nativeMcp.length });
-      }
+      const snapshot = await resolveChatParamToolSnapshot.resolve(tools);
+      return snapshot.tools;
     } catch (err) {
-      log.debug("Kilo native MCP discovery skipped", { error: String(err) });
+      log.debug("Kilo native MCP tool snapshot failed", { error: String(err) });
+      return Array.isArray(tools) ? applyCursorWriteToolContract(tools as any[]) as any[] : [];
     }
-    return enrichKiloToolsWithMcpAliases(next);
   }
 
   async function refreshTools() {
@@ -3507,18 +3508,6 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
         }
       }
 
-      // Direct MCP defs when enabled (default ON)
-      if (mcpToolDefs.length > 0) {
-        const beforeTools = Array.isArray(output.options.tools) ? output.options.tools : [];
-        output.options.tools = Array.isArray(output.options.tools)
-          ? [...output.options.tools, ...mcpToolDefs]
-          : mcpToolDefs;
-        log.debug("Appended direct MCP tool definitions", {
-          injectedCount: mcpToolDefs.length,
-          beforeCount: beforeTools.length,
-          afterCount: Array.isArray(output.options.tools) ? output.options.tools.length : 0,
-        });
-      }
     },
 
     async "chat.headers"(input: any, output: { headers: Record<string, string> }) {
