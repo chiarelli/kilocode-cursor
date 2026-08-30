@@ -1769,7 +1769,9 @@ export async function ensureCursorProxyServer(
             const finalizeOpenAiStream = () => {
               if (streamTerminated) return;
               clearUsageDrainTimer();
-              for (const payload of formatStreamUsageAndDoneSse(id, created, model, usage)) {
+              for (const payload of formatStreamUsageAndDoneSse(id, created, model, usage, {
+                finishReason: toolCallFinishPending ? "tool_calls" : "stop",
+              })) {
                 enqueueSse(payload);
               }
               streamTerminated = true;
@@ -2534,7 +2536,9 @@ export async function ensureCursorProxyServer(
             return;
           }
           clearUsageDrainTimer();
-          for (const payload of formatStreamUsageAndDoneSse(id, created, model, usage)) {
+          for (const payload of formatStreamUsageAndDoneSse(id, created, model, usage, {
+            finishReason: toolCallFinishPending ? "tool_calls" : "stop",
+          })) {
             writeSse(payload);
           }
           streamTerminated = true;

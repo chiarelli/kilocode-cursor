@@ -661,7 +661,7 @@ describe("OpenCode-owned tool loop integration", () => {
     rmSync(mockDir, { recursive: true, force: true });
   });
 
-  it("emits usage chunk when streaming tool_call terminates", async () => {
+  it("omits usage chunk when streaming tool_call terminates", async () => {
     process.env.MOCK_CURSOR_SCENARIO = "tool-read-with-usage";
     process.env.MOCK_CURSOR_PROMPT_FILE = "";
 
@@ -677,22 +677,11 @@ describe("OpenCode-owned tool loop integration", () => {
     const chunks = parseJsonChunks(dataLines);
     const usageChunk = chunks.find((chunk) => chunk.usage?.prompt_tokens != null);
 
-    expect(usageChunk?.usage).toEqual({
-      prompt_tokens: 1240,
-      completion_tokens: 12,
-      total_tokens: 1252,
-      prompt_tokens_details: {
-        cached_tokens: 240,
-        cache_write_tokens: 0,
-      },
-      completion_tokens_details: {
-        reasoning_tokens: 0,
-      },
-    });
+    expect(usageChunk).toBeUndefined();
     expect(dataLines[dataLines.length - 1]).toBe("[DONE]");
   });
 
-  it("returns usage on non-streaming tool_calls response", async () => {
+  it("omits usage on non-streaming tool_calls response", async () => {
     process.env.MOCK_CURSOR_SCENARIO = "tool-read-with-usage";
     process.env.MOCK_CURSOR_PROMPT_FILE = "";
 
@@ -705,8 +694,7 @@ describe("OpenCode-owned tool loop integration", () => {
 
     const json: any = await response.json();
     expect(json.choices?.[0]?.finish_reason).toBe("tool_calls");
-    expect(json.usage?.prompt_tokens).toBe(1240);
-    expect(json.usage?.completion_tokens).toBe(12);
+    expect(json.usage).toBeUndefined();
   });
 
   it("intercepts streaming tool_call and terminates with tool_calls finish", async () => {

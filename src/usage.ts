@@ -112,12 +112,32 @@ export function createChatCompletionUsageChunk(
   };
 }
 
+function readFinishReason(payload: Record<string, unknown>): string | undefined {
+  const choices = payload.choices;
+  if (!Array.isArray(choices) || choices.length === 0) {
+    return undefined;
+  }
+  const first = choices[0];
+  if (!first || typeof first !== "object") {
+    return undefined;
+  }
+  const finishReason = (first as Record<string, unknown>).finish_reason;
+  return typeof finishReason === "string" ? finishReason : undefined;
+}
+
+/** Kilo sums per-step usage into context %; skip intermediate tool-call turns. */
+export function shouldEmitOpenAiUsage(finishReason?: string | null): boolean {
+  return finishReason !== "tool_calls";
+}
+
 /** Attach OpenAI usage to a non-streaming chat completion payload. */
 export function appendOpenAiUsage<T extends Record<string, unknown>>(
   payload: T,
   usage?: OpenAiUsage,
 ): T {
-  if (!usage) return payload;
+  if (!usage || !shouldEmitOpenAiUsage(readFinishReason(payload))) {
+    return payload;
+  }
   return { ...payload, usage };
 }
 
@@ -127,9 +147,11 @@ export function formatStreamUsageAndDoneSse(
   created: number,
   model: string,
   usage?: OpenAiUsage,
+  options?: { finishReason?: string | null },
 ): string[] {
   const payloads: string[] = [];
-  if (usage) {
+  const emitUsage = usage && shouldEmitOpenAiUsage(options?.finishReason);
+  if (emitUsage) {
     payloads.push(
       `data: ${JSON.stringify(createChatCompletionUsageChunk(id, created, model, usage))}\n\n`,
     );

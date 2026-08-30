@@ -86,6 +86,10 @@ Model sync: `kilo-cursor sync-models` (authenticated via Kilo auth store).
 
 See `src/provider/tool-loop-guard.ts` and `src/provider/runtime-interception.ts`.
 
+## Usage reporting
+
+Cursor `result.usage` is mapped to OpenAI-compatible `usage` on each provider response. Kilo records a `step-finish` per HTTP round-trip in the tool loop; intermediate `finish_reason: tool_calls` responses **omit** the usage chunk so inflated per-step cache counts do not spike the context meter. Usage is emitted only on the final `stop` response for that round.
+
 ## Operational Notes
 
 - Proxy default: `http://127.0.0.1:32124/v1`

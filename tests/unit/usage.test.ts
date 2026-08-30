@@ -5,6 +5,7 @@ import {
   extractOpenAiUsageFromResult,
   formatStreamUsageAndDoneSse,
   normalizeCursorUsage,
+  shouldEmitOpenAiUsage,
   type OpenAiUsage,
 } from "../../src/usage.js";
 
@@ -129,6 +130,41 @@ describe("usage metrics", () => {
       choices: [],
       usage,
     });
+  });
+
+  it("skips usage on non-streaming tool_calls responses", () => {
+    const usage = createOpenAiUsage({
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+    expect(
+      appendOpenAiUsage(
+        { id: "x", choices: [{ finish_reason: "tool_calls" }] },
+        usage,
+      ),
+    ).toEqual({
+      id: "x",
+      choices: [{ finish_reason: "tool_calls" }],
+    });
+  });
+
+  it("omits usage chunks for tool_calls stream termination", () => {
+    const usage = createOpenAiUsage({
+      inputTokens: 10,
+      outputTokens: 2,
+      reasoningTokens: 0,
+      cacheReadTokens: 0,
+      cacheWriteTokens: 0,
+    });
+    const payloads = formatStreamUsageAndDoneSse("chatcmpl-test", 123, "auto", usage, {
+      finishReason: "tool_calls",
+    });
+    expect(payloads).toEqual(["data: [DONE]\n\n"]);
+    expect(shouldEmitOpenAiUsage("tool_calls")).toBe(false);
+    expect(shouldEmitOpenAiUsage("stop")).toBe(true);
   });
 
   it("formats streaming usage before [DONE]", () => {
