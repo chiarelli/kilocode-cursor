@@ -5,6 +5,13 @@ import {
   remapBareMcpToolCall,
   resolveMcpToolName,
 } from "../mcp/kilo-bridge.js";
+import {
+  GET_DYNAMIC_TOOLS_NAME,
+  isCallDynamicToolName,
+  isGetDynamicToolsName,
+  resolveCallDynamicToolToKiloName,
+  shouldPassthroughCursorDynamicTool,
+} from "../mcp/dynamic-catalog.js";
 import { namespaceMcpTool } from "../mcp/tool-bridge.js";
 import { createLogger } from "../utils/logger.js";
 
@@ -156,13 +163,43 @@ export function extractOpenAiToolCall(
     return { action: "skip", skipReason: "no_name" };
   }
 
-  if (isCursorNativeMcpDiscoveryTool(name)) {
+  if (isGetDynamicToolsName(name) || isCallDynamicToolName(name) || isCursorNativeMcpDiscoveryTool(name)) {
     const metaResult = extractMcpMetaToolCall(event, allowedToolNames);
     if (metaResult) {
       return metaResult;
     }
-    log.debug("Blocked cursor-agent native MCP discovery tool; use Kilo MCP tool names", { name });
-    return { action: "skip", skipReason: "cursor_native_mcp_blocked" };
+    const remappedDynamic = resolveCallDynamicToolToKiloName(args, allowedToolNames);
+    if (remappedDynamic) {
+      const callId = event.call_id || (event as any).tool_call_id || "call_unknown";
+      return {
+        action: "intercept",
+        toolCall: {
+          id: callId,
+          type: "function",
+          function: {
+            name: remappedDynamic.name,
+            arguments: toOpenAiArguments(remappedDynamic.args),
+          },
+        },
+      };
+    }
+    if (isCallDynamicToolName(name) && shouldPassthroughCursorDynamicTool(args)) {
+      return { action: "passthrough", passthroughName: name };
+    }
+    if (isGetDynamicToolsName(name) || isCursorNativeMcpDiscoveryTool(name)) {
+      const callId = event.call_id || (event as any).tool_call_id || "call_unknown";
+      return {
+        action: "intercept",
+        toolCall: {
+          id: callId,
+          type: "function",
+          function: {
+            name: GET_DYNAMIC_TOOLS_NAME,
+            arguments: toOpenAiArguments(args ?? {}),
+          },
+        },
+      };
+    }
   }
 
   if (isCursorMcpMetaTool(name)) {

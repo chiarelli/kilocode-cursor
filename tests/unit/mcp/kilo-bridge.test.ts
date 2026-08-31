@@ -4,7 +4,9 @@ import {
   buildProxyAllowedToolNames,
   enrichKiloToolsWithMcpAliases,
   isCursorNativeMcpDiscoveryTool,
+  isKiloMcpCatalogToolName,
   isKiloMcpToolName,
+  mcpCatalogAliasKey,
   remapBareMcpToolCall,
   resolveMcpToolName,
   splitKiloMcpToolName,
@@ -28,6 +30,16 @@ describe("mcp/kilo-bridge", () => {
     expect(splitKiloMcpToolName("read")).toBeNull();
   });
 
+  it("keeps natives and viking wrappers out of the GetDynamicTools catalog", () => {
+    expect(isKiloMcpCatalogToolName("openviking_search")).toBe(true);
+    expect(isKiloMcpCatalogToolName("context7_query-docs")).toBe(true);
+    expect(isKiloMcpCatalogToolName("agent_manager")).toBe(false);
+    expect(isKiloMcpCatalogToolName("background_process")).toBe(false);
+    expect(isKiloMcpCatalogToolName("kilo_local_recall")).toBe(false);
+    expect(isKiloMcpCatalogToolName("viking_search")).toBe(false);
+    expect(mcpCatalogAliasKey("context7_query-docs")).toBe(mcpCatalogAliasKey("context7_query_docs"));
+  });
+
   it("maps cursor-agent mcp__ names back to Kilo names", () => {
     const allowed = new Set(["context7_resolve-library-id", "read"]);
     expect(resolveMcpToolName("mcp__context7__resolve_library_id", allowed)).toBe(
@@ -38,7 +50,7 @@ describe("mcp/kilo-bridge", () => {
     );
   });
 
-  it("adds mcp__ aliases for Kilo MCP tools in the request", () => {
+  it("does not add mcp__ aliases to the visible catalog", () => {
     const tools = [
       {
         type: "function",
@@ -53,7 +65,7 @@ describe("mcp/kilo-bridge", () => {
     const enriched = enrichKiloToolsWithMcpAliases(tools);
     const names = enriched.map((t) => t.function.name);
     expect(names).toContain("context7_get_docs");
-    expect(names).toContain("mcp__context7__get_docs");
+    expect(names.some((name) => name.startsWith("mcp__"))).toBe(false);
   });
 
   it("builds proxy allowlist with both Kilo and cursor-agent MCP names", () => {
@@ -64,7 +76,7 @@ describe("mcp/kilo-bridge", () => {
 
     expect(allowed.has("context7_search")).toBe(true);
     expect(allowed.has("mcp__context7__search")).toBe(true);
-    expect(allowed.has("read")).toBe(true);
+    expect(allowed.has("GetDynamicTools")).toBe(true);
   });
 
   it("remaps bare mcp wrapper calls to the Kilo tool name", () => {
@@ -86,8 +98,7 @@ describe("mcp/kilo-bridge", () => {
   it("builds alias hint for system prompt", () => {
     const hint = buildKiloMcpAliasHint(["read", "context7_search", "bash"]);
     expect(hint).toContain("context7_search");
-    expect(hint).toContain("mcp__context7__search");
-    expect(hint).toContain("GetMcpTools");
+    expect(hint).toContain("GetDynamicTools");
     expect(isKiloMcpToolName("context7_search")).toBe(true);
   });
 

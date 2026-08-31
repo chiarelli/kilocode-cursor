@@ -64,8 +64,7 @@ describe("mcp/tool-bridge", () => {
 
     const defs = buildMcpToolDefinitions(tools as any);
     const names = defs.map((d) => d?.function?.name);
-    expect(names).toContain("mcp__hybrid_memory__memory_search");
-    expect(names).toContain("hybrid_memory_memory_search");
+    expect(names).toEqual(["hybrid_memory_memory_search"]);
   });
 
   it("handles tools with no inputSchema", () => {

@@ -15,6 +15,14 @@ const KILO_NATIVE_UNDERSCORE_TOOLS = new Set([
   "call_omo_agent",
 ]);
 
+/** Underscore tools whose first segment looks like an MCP server but are Kilo/OpenViking natives. */
+const KILO_NATIVE_CATALOG_SERVERS = new Set([
+  "agent",
+  "background",
+  "kilo",
+  "viking",
+]);
+
 /** Split a Kilo MCP function name into server + tool segments. */
 export function splitKiloMcpToolName(name: string): { server: string; toolName: string } | null {
   if (!/^[a-zA-Z0-9]+_[a-zA-Z0-9_.-]+$/.test(name)) {
@@ -38,6 +46,19 @@ export function splitKiloMcpToolName(name: string): { server: string; toolName: 
 
 export function isKiloMcpToolName(name: string): boolean {
   return splitKiloMcpToolName(name) !== null;
+}
+
+/** Visible GetDynamicTools catalog: real MCP servers only, not Kilo/OpenViking natives. */
+export function isKiloMcpCatalogToolName(name: string): boolean {
+  const split = splitKiloMcpToolName(name);
+  if (!split) {
+    return false;
+  }
+  return !KILO_NATIVE_CATALOG_SERVERS.has(split.server.toLowerCase());
+}
+
+export function mcpCatalogAliasKey(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]/g, "");
 }
 
 /** Map cursor-agent MCP names back to the Kilo tool name from the request allowlist. */
@@ -111,49 +132,60 @@ export function extractFunctionToolNames(tools: Array<any>): string[] {
   return names;
 }
 
-/** Add cursor-agent aliases (mcp__*) for Kilo MCP tools already in the request. */
-export function enrichKiloToolsWithMcpAliases(tools: Array<any>): Array<any> {
+/** Drop `mcp__*` aliases from the visible catalog; Kilo names stay as registered. */
+export function stripVisibleMcpPrefixTools(tools: Array<any>): Array<any> {
   if (!Array.isArray(tools) || tools.length === 0) {
     return tools;
   }
-
-  const existing = new Set(extractFunctionToolNames(tools));
-  const aliases: Array<any> = [];
-
-  for (const tool of tools) {
-    const fn = tool?.function ?? tool;
-    const clientName = fn?.name;
-    if (typeof clientName !== "string") {
-      continue;
-    }
-
-    const split = splitKiloMcpToolName(clientName);
-    if (!split) {
-      continue;
-    }
-
-    const alias = namespaceMcpTool(split.server, split.toolName);
-    if (existing.has(alias)) {
-      continue;
-    }
-
-    existing.add(alias);
-    aliases.push({
-      type: "function",
-      function: {
-        name: alias,
-        description: fn.description ?? `Alias for Kilo MCP tool ${clientName}`,
-        parameters: fn.parameters ?? { type: "object", properties: {} },
-      },
-    });
-  }
-
-  return aliases.length > 0 ? [...tools, ...aliases] : tools;
+  return tools.filter((tool) => {
+    const name = (tool?.function ?? tool)?.name;
+    return typeof name !== "string" || !name.startsWith("mcp__");
+  });
 }
 
-/** Allowlist for interception: Kilo names plus matching mcp__ aliases. */
+/**
+ * When two names differ only by hyphen/underscore, keep the Kilo-registered
+ * canonical name from `preferNames` (usually `mcp.tool.list()`).
+ */
+export function preferCanonicalMcpNames(tools: Array<any>, preferNames: string[]): Array<any> {
+  const preferredByKey = new Map<string, string>();
+  for (const name of preferNames) {
+    if (name.startsWith("mcp__")) {
+      continue;
+    }
+    preferredByKey.set(normalizeToolAliasKey(name), name);
+  }
+
+  const seen = new Set<string>();
+  const kept: Array<any> = [];
+  for (const tool of tools) {
+    const name = (tool?.function ?? tool)?.name;
+    if (typeof name !== "string" || name.startsWith("mcp__")) {
+      continue;
+    }
+    const key = normalizeToolAliasKey(name);
+    const preferred = preferredByKey.get(key);
+    if (preferred && name !== preferred) {
+      continue;
+    }
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    kept.push(tool);
+  }
+  return kept;
+}
+
+/** @deprecated Visible mcp__ aliases are no longer injected. Keep as identity for callers. */
+export function enrichKiloToolsWithMcpAliases(tools: Array<any>): Array<any> {
+  return stripVisibleMcpPrefixTools(tools);
+}
+
+/** Allowlist for interception: Kilo names plus hidden mcp__ aliases for remapping. */
 export function buildProxyAllowedToolNames(tools: Array<any>): Set<string> {
   const names = new Set(extractFunctionToolNames(tools));
+  names.add("GetDynamicTools");
 
   for (const name of names) {
     const split = splitKiloMcpToolName(name);
@@ -251,22 +283,18 @@ export async function discoverKiloNativeMcpToolDefs(client: any): Promise<Array<
 }
 
 export function buildKiloMcpAliasHint(toolNames: string[]): string | null {
-  const lines = toolNames
-    .filter(isKiloMcpToolName)
+  const lines = [...new Set(toolNames.filter((name) => isKiloMcpToolName(name) && !name.startsWith("mcp__")))]
     .sort()
-    .map((clientName) => {
-      const split = splitKiloMcpToolName(clientName)!;
-      return `${clientName} ↔ ${namespaceMcpTool(split.server, split.toolName)}`;
-    });
+    .map((clientName) => `  - ${clientName}`);
 
   if (lines.length === 0) {
     return null;
   }
 
   return [
-    "Kilo MCP tools (executed by Kilo — NOT by cursor-agent GetMcpTools/CallMcpTool):",
-    "Use one of the names below exactly. cursor-agent has no MCP servers connected.",
-    ...lines.map((line) => `  - ${line}`),
+    "Kilo MCP tools (executed by Kilo). Invoke by the Kilo name exactly — no mcp__ prefix.",
+    "GetDynamicTools lists this same catalog. Native Cursor tools stay in namespace \"cursor\".",
+    ...lines,
   ].join("\n");
 }
 

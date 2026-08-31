@@ -95,16 +95,16 @@ import type { KiloCatalogResult } from "./models/kilo-catalog.js";
 import { readMcpConfigs } from "./mcp/config.js";
 import { McpClientManager } from "./mcp/client-manager.js";
 import { buildKiloMcpAliasHint } from "./mcp/kilo-bridge.js";
+import { buildKiloMcpDiscoveryToolEntries, rememberMcpCatalogFromTools } from "./mcp/dynamic-catalog.js";
 import {
   createChatParamToolSnapshotResolver,
   resetPromptToolSchemaCacheOnFingerprintChange,
 } from "./mcp/tool-snapshot.js";
 import { isDirectMcpEnabled, removePassthroughBridgeCliConfig, syncKiloPassthroughBridgeCliConfig } from "./kilo/cursor-cli-bridge.js";
+import { namespaceMcpToolKilo } from "./kilo/platform.js";
 import {
-  MCP_TOOL_PREFIX,
   buildMcpToolHookEntries,
   buildMcpToolDefinitions,
-  namespaceMcpTool,
 } from "./mcp/tool-bridge.js";
 import { createKiloClient } from "@kilocode/sdk";
 import { ToolRegistry as CoreRegistry } from "./tools/core/registry.js";
@@ -185,7 +185,7 @@ export function buildAvailableToolsSystemMessage(
       ...summary,
       callName: summary.callName
         ?? getMcpToolDefinitionName(mcpToolDefs, index)
-        ?? namespaceMcpTool(summary.serverName, summary.toolName),
+        ?? namespaceMcpToolKilo(summary.serverName, summary.toolName),
     }));
 
     const servers = new Map<string, Array<McpToolSummary & { callName: string }>>();
@@ -196,9 +196,8 @@ export function buildAvailableToolsSystemMessage(
     }
 
     const lines: string[] = [
-      `MCP TOOLS — Call these tools by their FULL exact name (e.g. mcp__filesystem__read_file).`,
-      `Important: There is NO tool named 'mcp'. Every MCP tool has the format mcp__<server>__<tool>.`,
-      "Do NOT call a tool named 'mcp' with parameters. Always use the complete tool name below.",
+      "MCP TOOLS — Call these tools by their Kilo name (e.g. openviking_search, context7_query-docs).",
+      "GetDynamicTools lists this same catalog. Do not use mcp__ prefixes.",
       "",
     ];
 
@@ -1483,6 +1482,7 @@ export async function ensureCursorProxyServer(
       const stream = body?.stream === true;
       const tools = Array.isArray(body?.tools) ? body.tools : [];
       const kiloSubagents = proxyKiloSubagents(tools);
+      rememberMcpCatalogFromTools(tools);
 
       log.debug("raw request body", {
         model: body?.model,
@@ -2244,6 +2244,7 @@ export async function ensureCursorProxyServer(
       const stream = bodyData?.stream === true;
       const tools = Array.isArray(bodyData?.tools) ? bodyData.tools : [];
       const kiloSubagents = proxyKiloSubagents(tools);
+      rememberMcpCatalogFromTools(tools);
       const allowedToolNames = buildProxyAllowedToolNames(tools);
       const bridgeJsonEnabled = isBridgeJsonEnabled();
       const toolSchemaMap = buildToolSchemaMap(tools);
@@ -3264,7 +3265,7 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
           mcpToolSummaries = tools.map((t) => ({
             serverName: t.serverName,
             toolName: t.name,
-            callName: namespaceMcpTool(t.serverName, t.name),
+            callName: namespaceMcpToolKilo(t.serverName, t.name),
             description: t.description,
             params: t.inputSchema
               ? Object.keys((t.inputSchema as any).properties ?? {})
@@ -3421,7 +3422,7 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
   const toolHookEntries = buildToolHookEntries(localRegistry, workspaceDirectory);
 
   return {
-    tool: { ...toolHookEntries, ...mcpToolEntries },
+    tool: { ...toolHookEntries, ...mcpToolEntries, ...buildKiloMcpDiscoveryToolEntries(client) },
     auth: {
       provider: CURSOR_PROVIDER_ID,
       methods: buildCursorAuthMethods(CURSOR_PROVIDER_ID),
@@ -3502,6 +3503,7 @@ export const CursorPlugin: Plugin = async ({ $, directory, worktree, client, ser
               .map((t: any) => t?.function?.name)
               .filter((name: unknown): name is string => typeof name === "string" && name.length > 0);
             lastKiloSubagents = extractKiloSubagentsFromTools(output.options.tools);
+            rememberMcpCatalogFromTools(output.options.tools);
           }
         } catch (err) {
           log.debug("Failed to refresh tools", { error: String(err) });

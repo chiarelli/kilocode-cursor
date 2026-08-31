@@ -1,10 +1,12 @@
 import { buildToolFingerprint, _resetToolSchemaCache } from "../proxy/prompt-builder.js";
 import { createLogger } from "../utils/logger.js";
+import { getDynamicToolsDefinition } from "./dynamic-catalog.js";
 import {
   discoverKiloNativeMcpToolDefs,
-  enrichKiloToolsWithMcpAliases,
   extractFunctionToolNames,
   mergeToolDefinitionsByName,
+  preferCanonicalMcpNames,
+  stripVisibleMcpPrefixTools,
 } from "./kilo-bridge.js";
 
 const log = createLogger("mcp:tool-snapshot");
@@ -145,12 +147,14 @@ function buildFinalizedTools(
   mcpTools: Array<any>,
   appendTools: Array<any>,
 ): Array<any> {
+  const canonicalMcpNames = extractFunctionToolNames(mcpTools);
   let merged = mergeToolDefinitionsByName(baseTools, mcpTools);
-  merged = enrichKiloToolsWithMcpAliases(merged);
   if (appendTools.length > 0) {
     merged = mergeToolDefinitionsByName(merged, appendTools);
   }
-  return merged;
+  merged = mergeToolDefinitionsByName(merged, [getDynamicToolsDefinition()]);
+  merged = stripVisibleMcpPrefixTools(merged);
+  return preferCanonicalMcpNames(merged, canonicalMcpNames);
 }
 
 export function createChatParamToolSnapshotResolver(

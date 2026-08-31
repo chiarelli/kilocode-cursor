@@ -138,7 +138,8 @@ describe("mcp/tool-snapshot", () => {
     expect(second.fingerprintChanged).toBe(true);
     expect(first.fingerprint).not.toBe(second.fingerprint);
     expect(second.tools.map((t) => t.function.name)).toContain("openviking_search");
-    expect(second.tools.map((t) => t.function.name)).toContain("mcp__openviking__search");
+    expect(second.tools.map((t) => t.function.name)).toContain("GetDynamicTools");
+    expect(second.tools.map((t) => t.function.name).some((name) => name.startsWith("mcp__"))).toBe(false);
   });
 
   it("fingerprints MCP tool name lists deterministically", () => {

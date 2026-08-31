@@ -508,12 +508,42 @@ describe("extractOpenAiToolCall with pass-through", () => {
     expect(result.toolCall?.function.name).toBe("context7_resolve-library-id");
   });
 
-  it("should skip GetMcpTools when no Kilo mapping exists", () => {
+  it("should intercept GetMcpTools as GetDynamicTools catalog", () => {
     const event = createToolCallEvent("GetMcpTools", {});
 
-    const result = extractOpenAiToolCall(event, new Set(["context7_search"]));
+    const result = extractOpenAiToolCall(event, new Set(["context7_search", "GetDynamicTools"]));
 
-    expect(result.action).toBe("skip");
-    expect(result.skipReason).toBe("cursor_native_mcp_blocked");
+    expect(result.action).toBe("intercept");
+    expect(result.toolCall?.function.name).toBe("GetDynamicTools");
+  });
+
+  it("should remap CallDynamicTool to the Kilo MCP name", () => {
+    const event = createToolCallEvent("CallDynamicTool", {
+      namespace: "openviking",
+      toolName: "search",
+      arguments: { query: "test" },
+    });
+
+    const result = extractOpenAiToolCall(
+      event,
+      new Set(["openviking_search", "GetDynamicTools"]),
+    );
+
+    expect(result.action).toBe("intercept");
+    expect(result.toolCall?.function.name).toBe("openviking_search");
+    expect(JSON.parse(result.toolCall?.function.arguments ?? "{}")).toEqual({ query: "test" });
+  });
+
+  it("should passthrough CallDynamicTool for the cursor namespace", () => {
+    const event = createToolCallEvent("CallDynamicTool", {
+      namespace: "cursor",
+      toolName: "CreateGoal",
+      arguments: { title: "x" },
+    });
+
+    const result = extractOpenAiToolCall(event, new Set(["openviking_search", "GetDynamicTools"]));
+
+    expect(result.action).toBe("passthrough");
+    expect(result.passthroughName).toBe("CallDynamicTool");
   });
 });

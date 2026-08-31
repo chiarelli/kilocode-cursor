@@ -19,7 +19,7 @@ describe("Plugin MCP system transform", () => {
       [
         {
           type: "function",
-          function: { name: "mcp__hybrid_memory__memory_search" },
+          function: { name: "hybrid_memory_memory_search" },
         },
       ],
       [
@@ -37,9 +37,9 @@ describe("Plugin MCP system transform", () => {
       ],
     );
 
-    expect(systemMessage).toContain("FULL exact name");
-    expect(systemMessage).toContain("mcp__");
-    expect(systemMessage).toContain("mcp__hybrid_memory__memory_search");
+    expect(systemMessage).toContain("Kilo name");
+    expect(systemMessage).toContain("GetDynamicTools");
+    expect(systemMessage).toContain("hybrid_memory_memory_search");
     expect(systemMessage).toContain("hybrid-memory");
     expect(systemMessage).toContain("memory_search");
     expect(systemMessage).toContain("memory_stats");
@@ -53,7 +53,7 @@ describe("Plugin MCP system transform", () => {
       [
         {
           type: "function",
-          function: { name: "mcp__test_filesystem__list_directory" },
+          function: { name: "test_filesystem_list_directory" },
         },
       ],
       [
@@ -66,7 +66,7 @@ describe("Plugin MCP system transform", () => {
       ],
     );
 
-    expect(systemMessage).toContain("mcp__test_filesystem__list_directory");
+    expect(systemMessage).toContain("test_filesystem_list_directory");
     expect(systemMessage).toContain("server: test-filesystem");
     expect(systemMessage).toContain("tool: list-directory");
   });

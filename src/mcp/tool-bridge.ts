@@ -62,7 +62,7 @@ export function buildMcpToolHookEntries(
 
 /**
  * Build OpenAI-format tool definitions for discovered MCP tools.
- * Exposes both cursor-agent and Kilo native names.
+ * Visible names match Kilo (`<server>_<tool>`); mcp__ aliases stay off the catalog.
  */
 export function buildMcpToolDefinitions(tools: DiscoveredMcpTool[]): any[] {
   const defs: any[] = [];
@@ -72,14 +72,13 @@ export function buildMcpToolDefinitions(tools: DiscoveredMcpTool[]): any[] {
     const description = t.description || `MCP tool: ${t.name} (server: ${t.serverName})`;
     const parameters = t.inputSchema ?? { type: "object", properties: {} };
 
-    for (const name of [namespaceMcpTool(t.serverName, t.name), namespaceMcpToolKilo(t.serverName, t.name)]) {
-      if (seen.has(name)) continue;
-      seen.add(name);
-      defs.push({
-        type: "function",
-        function: { name, description, parameters },
-      });
-    }
+    const name = namespaceMcpToolKilo(t.serverName, t.name);
+    if (seen.has(name)) continue;
+    seen.add(name);
+    defs.push({
+      type: "function",
+      function: { name, description, parameters },
+    });
   }
 
   return defs;
