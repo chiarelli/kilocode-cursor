@@ -386,7 +386,7 @@ describe("proxy/tool-loop", () => {
 
   it("builds valid non-stream tool call response", () => {
     const response = createToolCallCompletionResponse(
-      { id: "resp-1", created: 123, model: "cursor-acp/auto" },
+      { id: "resp-1", created: 123, model: "cursor-kilo/auto" },
       {
         id: "call_9",
         type: "function",
@@ -405,7 +405,7 @@ describe("proxy/tool-loop", () => {
 
   it("builds valid stream chunks with tool_calls finish reason", () => {
     const chunks = createToolCallStreamChunks(
-      { id: "resp-2", created: 456, model: "cursor-acp/auto" },
+      { id: "resp-2", created: 456, model: "cursor-kilo/auto" },
       {
         id: "call_10",
         type: "function",
@@ -473,7 +473,20 @@ describe("extractOpenAiToolCall with pass-through", () => {
     expect(result.skipReason).toBe("no_name");
   });
 
-  it("should return passthrough action when model tries to call 'mcp' directly", () => {
+  it("should intercept bare mcp wrapper when provider/toolName resolve to Kilo tool", () => {
+    const event = createToolCallEvent("mcp", {
+      providerIdentifier: "context7",
+      toolName: "search",
+      args: { q: "react" },
+    });
+
+    const result = extractOpenAiToolCall(event, new Set(["context7_search", "mcp__context7__search"]));
+
+    expect(result.action).toBe("intercept");
+    expect(result.toolCall?.function.name).toBe("context7_search");
+  });
+
+  it("should passthrough bare mcp when provider/toolName cannot be resolved", () => {
     const event = createToolCallEvent("mcp", { server: "engram", tool: "mem_save" });
 
     const result = extractOpenAiToolCall(event, new Set(["bash", "mcp__engram__mem_save"]));
@@ -483,13 +496,54 @@ describe("extractOpenAiToolCall with pass-through", () => {
     expect(result.toolCall).toBeUndefined();
   });
 
-  it("should intercept valid MCP tool calls with full namespaced name", () => {
-    const event = createToolCallEvent("mcp__engram__mem_save", { memory: "test" });
+  it("should intercept mcp__ calls and return the Kilo native name", () => {
+    const event = createToolCallEvent("mcp__context7__resolve_library_id", { library: "react" });
 
-    const result = extractOpenAiToolCall(event, new Set(["bash", "mcp__engram__mem_save"]));
+    const result = extractOpenAiToolCall(
+      event,
+      new Set(["context7_resolve-library-id", "mcp__context7__resolve_library_id"]),
+    );
 
     expect(result.action).toBe("intercept");
-    expect(result.toolCall).toBeDefined();
-    expect(result.toolCall!.function.name).toBe("mcp__engram__mem_save");
+    expect(result.toolCall?.function.name).toBe("context7_resolve-library-id");
+  });
+
+  it("should intercept GetMcpTools as GetDynamicTools catalog", () => {
+    const event = createToolCallEvent("GetMcpTools", {});
+
+    const result = extractOpenAiToolCall(event, new Set(["context7_search", "GetDynamicTools"]));
+
+    expect(result.action).toBe("intercept");
+    expect(result.toolCall?.function.name).toBe("GetDynamicTools");
+  });
+
+  it("should remap CallDynamicTool to the Kilo MCP name", () => {
+    const event = createToolCallEvent("CallDynamicTool", {
+      namespace: "openviking",
+      toolName: "search",
+      arguments: { query: "test" },
+    });
+
+    const result = extractOpenAiToolCall(
+      event,
+      new Set(["openviking_search", "GetDynamicTools"]),
+    );
+
+    expect(result.action).toBe("intercept");
+    expect(result.toolCall?.function.name).toBe("openviking_search");
+    expect(JSON.parse(result.toolCall?.function.arguments ?? "{}")).toEqual({ query: "test" });
+  });
+
+  it("should passthrough CallDynamicTool for the cursor namespace", () => {
+    const event = createToolCallEvent("CallDynamicTool", {
+      namespace: "cursor",
+      toolName: "CreateGoal",
+      arguments: { title: "x" },
+    });
+
+    const result = extractOpenAiToolCall(event, new Set(["openviking_search", "GetDynamicTools"]));
+
+    expect(result.action).toBe("passthrough");
+    expect(result.passthroughName).toBe("CallDynamicTool");
   });
 });
