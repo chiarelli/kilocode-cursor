@@ -1,33 +1,38 @@
 # kilo-cursor-plugin
 
-Ponte transparente entre **Kilo Code** e **cursor-agent**, baseada no [opencode-cursor](https://github.com/Nomadcxx/opencode-cursor).
+Transparent bridge between **Kilo Code** and **cursor-agent**, based on [opencode-cursor](https://github.com/Nomadcxx/opencode-cursor).
 
-Kilo é um fork do OpenCode — este plugin reutiliza a mesma arquitetura (proxy, streaming, tool loop, hooks `@kilocode/plugin`) com adaptações de config, OAuth e MCP.
+Kilo is an OpenCode fork. This plugin reuses the same architecture (proxy, streaming, tool loop, `@kilocode/plugin` hooks) with Kilo-specific config, OAuth, and MCP.
 
-Documentação de referência: [Kilo Plugins](https://kilo.ai/docs/automate/extending/plugins)
+Reference: [Kilo Plugins](https://kilo.ai/docs/automate/extending/plugins)
 
-## O que faz
+## What it does
 
-- Conecta modelos da assinatura Cursor ao Kilo via `cursor-agent` ou `@cursor/sdk` (API key)
-- **OAuth PKCE** via `kilo auth login --provider cursor` (JWT → cursor-agent; API key `sk-...` → SDK)
-- **Mapeia tools nativas**: `glob`, `read`, `websearch`, `bash`, etc. → tools do Kilo
-- **Ponte MCP em dois caminhos** (ver abaixo)
+- Connects Cursor subscription models to Kilo via `cursor-agent` or `@cursor/sdk` (API key)
+- **OAuth PKCE** via `kilo auth login --provider cursor` (JWT → cursor-agent; `sk-...` API key → SDK)
+- **Maps native tools**: `glob`, `read`, `websearch`, `bash`, and similar Cursor calls → Kilo tools
+- **MCP catalog on Kilo names**: `GetDynamicTools` / `GetMcpTools` list the same names Kilo executes (`openviking_search`, `context7_query_docs`). No `mcp__` prefix in the visible catalog
+- **Hybrid tool snapshot**: polls MCP while servers are pending, then fingerprint-caches `chat.params` so late tools appear without a Kilo reload
+- **Session resume** (cursor-agent, on by default): keyed per Kilo session; Cursor chat is reset after Kilo compaction so context-usage % does not stick
+- **OpenAI-compatible usage** on final responses (omitted on intermediate `tool_calls` chunks)
+- **Subagents**: Cursor `Task` calls are guided to Kilo subagents instead of Cursor-native task types
+- **Model sync**: authenticated catalog with fast/standard tiers, pricing, and `limit.context` / `limit.output`
 - Hooks: `tool`, `auth`, `chat.params`, `experimental.chat.system.transform`
 
-## Pré-requisitos
+## Prerequisites
 
-- [Kilo Code](https://kilo.ai) CLI ≥ 7.0 ou extensão VS Code
-- Assinatura Cursor + autenticação
+- [Kilo Code](https://kilo.ai) CLI ≥ 7.0 or the VS Code extension
+- A Cursor subscription and authentication
 
 ```bash
 curl -fsS https://cursor.com/install | bash
 kilo auth login --provider cursor
-# ou: cursor-agent login  /  CURSOR_API_KEY=sk-...
+# or: cursor-agent login  /  CURSOR_API_KEY=sk-...
 ```
 
-## Instalação
+## Install
 
-### Opção 1 — comando oficial do Kilo (recomendado)
+### Option 1 — official Kilo command (recommended)
 
 ```bash
 kilo plugin kilo-cursor-plugin --global
@@ -35,7 +40,7 @@ kilo-cursor install --skip-models
 kilo-cursor sync-models
 ```
 
-### Opção 2 — CLI deste pacote
+### Option 2 — this package’s CLI
 
 ```bash
 npm install -g kilo-cursor-plugin
@@ -43,15 +48,15 @@ kilo-cursor install
 kilo-cursor sync-models
 ```
 
-### Opção 3 — desenvolvimento local
+### Option 3 — local development
 
 ```bash
 bun install && bun run build
 kilo-cursor install
-# ou symlink em local-kilo/.kilo/kilo.jsonc → dist/plugin-entry.js
+# or symlink local-kilo/.kilo/kilo.jsonc → dist/plugin-entry.js
 ```
 
-### Config resultante (~/.config/kilo/kilo.jsonc)
+### Resulting config (~/.config/kilo/kilo.jsonc)
 
 ```jsonc
 {
@@ -70,45 +75,47 @@ kilo-cursor install
 }
 ```
 
-> **IDs:** `"kilo-cursor-plugin"` no array `plugin` carrega o plugin; `"cursor"` em `provider` registra o model provider (provider ID interno: `cursor`).
+> **IDs:** `"kilo-cursor-plugin"` in the `plugin` array loads the plugin; `"cursor"` under `provider` registers the model provider (internal provider ID: `cursor`). JSONC comments and trailing commas are accepted when syncing models.
 
-## Uso
+## Usage
 
 ```bash
-kilo run "Resuma este repo" --model cursor/auto
+kilo run "Summarize this repo" --model cursor/auto
 kilo auth login --provider cursor
 ```
 
-Selecione `cursor/*` no picker de modelos (variantes com `reasoning.effort` quando disponíveis).
+Pick `cursor/*` in the model picker (reasoning-effort variants when the catalog exposes them).
 
-## Ponte de tools (nativas)
+## Native tool bridge
 
 ```
-cursor-agent ──glob/read/bash──► proxy (intercept) ──► Kilo executa nativamente
+cursor-agent ──glob/read/bash──► proxy (intercept) ──► Kilo executes natively
 ```
 
-Modo padrão: `CURSOR_KILO_TOOL_LOOP_MODE=opencode` — o Kilo possui a lista de tools; o plugin só traduz `stream-json` → OpenAI `tool_calls`.
+Default mode: `CURSOR_KILO_TOOL_LOOP_MODE=opencode` — Kilo owns the tool list; the plugin only translates `stream-json` → OpenAI `tool_calls`.
 
-## Ponte MCP
+## MCP bridge
 
-Dois mecanismos complementares:
+Two complementary paths. Visible names always match Kilo: `<server>_<tool>` (for example `context7_query_docs`, `openviking_search`).
 
-### 1. Passthrough (sempre ativo)
+### 1. Passthrough (always on)
 
-MCP cadastrado **no Kilo** (ex.: context7 no painel MCP) — o Kilo executa; o plugin só mapeia nomes:
+MCP registered **in Kilo** (panel, plugins such as OpenViking, `client.mcp.tool.list()`):
 
-| Kilo (execução) | cursor-agent (prompt) |
-|----------------|------------------------|
-| `context7_resolve-library-id` | `mcp__context7__resolve_library_id` |
+| Kilo (execution + catalog) | Hidden remap (allowlist only) |
+|----------------------------|-------------------------------|
+| `context7_resolve_library_id` | `mcp__context7__resolve_library_id` |
 
-- Tools nativas do Kilo são mescladas em `chat.params` via `client.mcp.tool.list()`
-- Aliases `mcp__*` são injetados no prompt
-- `GetMcpTools` / `CallMcpTool` nativos do cursor-agent são bloqueados/redirecionados
-- Com passthrough ativo, grava `.cursor/cli.json` com `deny: ["Mcp(*:*)"]` para o cursor-agent não tentar MCP próprio
+- `chat.params` merges tools through a **hybrid snapshot** (`src/mcp/tool-snapshot.ts`): poll while MCP servers are `connecting`/`pending`, then reuse a fingerprint cache
+- **`GetDynamicTools`** (and Cursor `GetMcpTools`) returns that catalog. Kilo natives (`agent_manager`, `background_process`, …) and OpenViking `viking_*` wrappers stay on the request/prompt, not in this MCP list
+- Hyphen vs underscore aliases collapse to one canonical name (`context7_query_docs`, not both)
+- If `mcp.tool.list()` is still empty, the catalog is filled from tools already on the proxy wire (plugin MCP such as `openviking_*`)
+- `CallDynamicTool` remaps to the Kilo name unless `namespace` is `"cursor"` (`CreateGoal`, `GenerateImage`, `UpdateGoal`)
+- With passthrough active, the plugin writes `.cursor/cli.json` `deny: ["Mcp(*:*)"]` so cursor-agent does not run its own MCP
 
 ### 2. Direct MCP (default ON)
 
-Conecta servidores declarados em `kilo.jsonc` → `mcp` via stdio e registra hooks no plugin:
+Connects servers declared in `kilo.jsonc` → `mcp` over stdio and registers plugin tool hooks:
 
 ```jsonc
 {
@@ -121,44 +128,55 @@ Conecta servidores declarados em `kilo.jsonc` → `mcp` via stdio e registra hoo
 }
 ```
 
-Desabilitar: `CURSOR_KILO_DIRECT_MCP=false` (ou legado `CURSOR_KILO_MCP_BRIDGE=false`).
+Disable with `CURSOR_KILO_DIRECT_MCP=false` (legacy alias: `CURSOR_KILO_MCP_BRIDGE=false`).
 
-## Variáveis de ambiente
+## Session resume and usage
 
-| Variável | Default | Descrição |
+- **Resume** (`CURSOR_KILO_SESSION_RESUME`, default on, cursor-agent only): maps a Kilo tab to a Cursor `--resume` chat ID. Isolated per Kilo session ID so two chats in the same workspace do not share Cursor state
+- After **Kilo compaction**, the cached Cursor chat is dropped so the next turn starts a fresh context window (usage % does not carry over)
+- **Usage** is emitted in OpenAI-compatible form on the final assistant response; intermediate `tool_calls` chunks omit usage so Kilo does not double-count tokens
+
+## Environment variables
+
+| Variable | Default | Description |
 |---|---|---|
 | `CURSOR_KILO_TOOL_LOOP_MODE` | `opencode` | `opencode` \| `proxy-exec` \| `off` |
-| `CURSOR_KILO_DIRECT_MCP` | `true` | Bridge stdio a partir de `kilo.jsonc` |
-| `CURSOR_KILO_MCP_BRIDGE` | — | Legado; alias de `CURSOR_KILO_DIRECT_MCP` |
+| `CURSOR_KILO_DIRECT_MCP` | `true` | stdio bridge from `kilo.jsonc` `mcp` |
+| `CURSOR_KILO_MCP_BRIDGE` | — | Legacy alias of `CURSOR_KILO_DIRECT_MCP` |
+| `CURSOR_KILO_MCP_DISCOVERY` | `true` | Poll `mcp.status` until servers settle |
+| `CURSOR_KILO_MCP_DISCOVERY_MAX_WAIT_MS` | `2000` | Max wait while MCP is pending |
+| `CURSOR_KILO_MCP_DISCOVERY_POLL_MS` | `200` | Poll interval |
+| `CURSOR_KILO_MCP_DISCOVERY_STABLE_POLLS` | `2` | Consecutive settled polls required |
+| `CURSOR_KILO_SESSION_RESUME` | `true` | cursor-agent `--resume` cache |
 | `CURSOR_KILO_BACKEND` | `auto` | `auto` \| `cursor-agent` \| `sdk` |
-| `CURSOR_KILO_BRIDGE_JSON` | `true` | Bridge JSON para tool `write` |
-| `CURSOR_KILO_PROVIDER_BOUNDARY` | `v1` | Boundary de interceptação de tools |
-| `KILO_PURE=1` | — | Desabilita plugins externos (doc Kilo) |
+| `CURSOR_KILO_BRIDGE_JSON` | `true` | JSON bridge for the `write` tool |
+| `CURSOR_KILO_PROVIDER_BOUNDARY` | `v1` | Tool-intercept boundary |
+| `KILO_PURE=1` | — | Disable external plugins (Kilo docs) |
 
-Prefixo legado `CURSOR_ACP_*` ainda é lido em vários pontos.
+The legacy `CURSOR_ACP_*` prefix is still read in several places.
 
-## Comandos
+## Commands
 
 ```bash
-kilo-cursor install       # provider cursor + plugin
-kilo-cursor sync-models   # modelos autenticados (OAuth/API key do Kilo)
+kilo-cursor install       # cursor provider + plugin
+kilo-cursor sync-models   # authenticated models (Kilo OAuth / API key)
 kilo-cursor status
 kilo-cursor doctor
-mcptool tools             # debug MCP direct bridge
+mcptool tools             # debug direct MCP bridge
 kilo-cursor uninstall
 ```
 
-## Documentação adicional
+## Further documentation
 
-| Arquivo | Conteúdo |
+| File | Contents |
 |---|---|
 | [docs/architecture/runtime-tool-loop.md](docs/architecture/runtime-tool-loop.md) | Tool loop, boundary, bridge JSON |
-| [docs/cursor-agent-tools.md](docs/cursor-agent-tools.md) | Inventário de tools cursor-agent |
-| [docs/architecture/cursor-acp-mcp-future.md](docs/architecture/cursor-acp-mcp-future.md) | Roadmap ACP/MCP (referência) |
+| [docs/cursor-agent-tools.md](docs/cursor-agent-tools.md) | cursor-agent tool inventory |
+| [docs/architecture/cursor-acp-mcp-future.md](docs/architecture/cursor-acp-mcp-future.md) | ACP/MCP roadmap (reference) |
 
-Docs em `docs/architecture/*` com prefixo `opencode` / `cursor-acp` descrevem o fork upstream ou decisões históricas — o runtime Kilo usa `CURSOR_KILO_*` e provider ID `cursor`.
+Docs under `docs/architecture/*` whose names start with `opencode` or `cursor-acp` describe the upstream fork or historical decisions. The Kilo runtime uses `CURSOR_KILO_*` and provider ID `cursor`.
 
-## Desenvolvimento
+## Development
 
 ```bash
 bun install
@@ -167,6 +185,8 @@ bun test
 kilo --print-logs --log-level DEBUG
 ```
 
-## Licença
+After changing `src/`, rebuild (`bun run build`) and restart Kilo. If the plugin is installed from `~/.config/kilo/plugin/kilo-cursor-plugin`, copy sources there and rebuild that copy — Kilo loads `dist/plugin-entry.js`, not TypeScript.
+
+## License
 
 BSD-3-Clause
